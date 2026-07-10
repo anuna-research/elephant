@@ -242,6 +242,23 @@ impl TheoryStore {
         Ok(())
     }
 
+    /// Rotate the theory's corpus data key (SPEC-004 REQ-305): mint the next
+    /// keybook generation and persist it. Subsequent `append_batch` seals
+    /// under the new generation, so a member removed from the MLS group
+    /// (who therefore never receives the new keybook) cannot read anything
+    /// written after this point. Existing entries stay readable via the
+    /// earlier generations already in the keybook (ADR-302).
+    pub fn rotate_keybook(&mut self) -> AppResult<()> {
+        let kb = self.keybook.as_mut().ok_or_else(|| {
+            AppError::Config("no keybook for this theory (are you a member?)".into())
+        })?;
+        kb.rotate();
+        kb.save(&crate::e2ee::keybook::keybook_path(
+            &self.paths,
+            &self.theory_id,
+        ))
+    }
+
     /// All corpus entries, deserialised, in deterministic (hlc, signer)
     /// order. Undeserialisable elements are returned separately — they are
     /// quarantine candidates, never dropped silently (REQ-016).
@@ -305,6 +322,13 @@ impl TheoryStore {
 
     /// Append a batch of locally-signed entries in one commit (bundles,
     /// SPEC-003 ADR-202).
+    ///
+    /// Single-writer discipline (SPEC-002 REQ-102): all writers — the
+    /// daemon, a direct-mode CLI append, and the join ceremony — take an
+    /// exclusive per-theory file lock and re-import the latest on-disk
+    /// snapshot before appending, so concurrent writers merge rather than
+    /// clobber. Loro's import is an idempotent CRDT merge, so re-reading is
+    /// safe even mid-session.
     pub fn append_batch(&self, entries: &[Entry]) -> AppResult<()> {
         let kb = self.keybook.as_ref().ok_or_else(|| {
             AppError::Config(format!(
@@ -315,6 +339,12 @@ impl TheoryStore {
         let key = kb
             .current_key()
             .ok_or_else(|| AppError::Config("keybook has no current key".into()))?;
+
+        let _guard = self.write_lock()?;
+        // Fold in anything another writer committed since we opened.
+        if let Ok(snapshot) = std::fs::read(self.paths.theory_doc(&self.theory_id)) {
+            let _ = self.doc.import(&snapshot);
+        }
         let list = self.doc.get_list(CORPUS_CONTAINER);
         for entry in entries {
             let sealed = crate::e2ee::seal::seal(entry, &self.theory_id, kb.current, &key)?;
@@ -323,6 +353,21 @@ impl TheoryStore {
         }
         self.doc.commit();
         self.flush()
+    }
+
+    /// Exclusive per-theory write lock, held for one append (REQ-102).
+    fn write_lock(&self) -> AppResult<std::fs::File> {
+        use fs2::FileExt as _;
+        let dir = self.paths.theory_dir(&self.theory_id);
+        std::fs::create_dir_all(&dir)?;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.join("write.lock"))?;
+        f.lock_exclusive()
+            .map_err(|e| AppError::Transport(format!("theory write lock: {e}")))?;
+        Ok(f)
     }
 
     /// Append a locally-signed entry and persist (REQ-020: no network).

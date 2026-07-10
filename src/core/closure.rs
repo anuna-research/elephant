@@ -71,12 +71,13 @@ pub struct Closure {
 }
 
 /// Deterministic SPL source atom for a signer DID (ADR-012).
-/// `did:crdt:<64hex>` → `agent:<first 16 hex>`; theory members can list the
-/// mapping via `elephant theory members`.
+/// `did:crdt:<64hex>` → `agent:<full method-specific id>`. The full id is
+/// used, not a prefix: a truncated prefix would let a ~2^64 keypair grind
+/// collide two DIDs onto one `agent:` atom and steal a trusted source's
+/// weight, defeating the point of envelope-derived provenance.
 pub fn source_atom(did: &str) -> String {
     let tail = did.rsplit(':').next().unwrap_or(did);
-    let prefix: String = tail.chars().take(16).collect();
-    format!("agent:{prefix}")
+    format!("agent:{tail}")
 }
 
 fn rfc3339_from_ms(ms: u64) -> String {
@@ -105,7 +106,17 @@ pub fn close(
     let mut admitted: Vec<Admitted> = Vec::new();
     let mut quarantined: Vec<(Entry, Quarantine)> = Vec::new();
     for e in entries {
-        let expected = if e.theory == genesis_sentinel {
+        // The genesis sentinel is honoured ONLY for the entry that actually
+        // is the genesis — i.e. whose canonical bytes hash to the theory id.
+        // Without this check, any member could mint entries with
+        // theory="genesis" that are bound to no theory and thus replay into
+        // every theory they belong to (cross-theory binding hole).
+        let is_genesis = e.theory == genesis_sentinel
+            && blake3::hash(crate::core::envelope::entry_to_json(e).as_bytes())
+                .to_hex()
+                .as_str()
+                == theory_id;
+        let expected = if is_genesis {
             genesis_sentinel
         } else {
             theory_id
@@ -160,11 +171,16 @@ pub fn close(
     // corpus order (hlc, signer — `admitted` is already in that order) and
     // drop later redefinitions from closure. They remain in the corpus and
     // the journal (REQ-016); only their effect on this closure is suppressed.
-    let mut spl = String::new();
-    spl.push_str(local_trust_spl);
-    spl.push('\n');
     let mut seen_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for a in admitted.iter_mut().filter(|a| !a.retracted) {
+    // Each block carries the admitted index it came from, so if the block
+    // turns out to be toxic in combination (label collision the cheap
+    // explicit-label dedup missed) it can be quarantined per-entry rather
+    // than bricking the whole theory.
+    let mut blocks: Vec<(usize, String)> = Vec::new();
+    for (i, a) in admitted.iter_mut().enumerate() {
+        if a.retracted {
+            continue;
+        }
         let (sentence_id, payload) = match &a.act {
             SpeechAct::Assert {
                 sentence_id,
@@ -180,39 +196,82 @@ pub fn close(
         }
         let source = source_atom(&a.entry.signer);
         let at = rfc3339_from_ms(a.entry.hlc.wall_ms);
-        spl.push_str(&format!(
-            "(claims {source} :at \"{at}\" :id \"{sentence_id}\"\n  {payload})\n"
+        blocks.push((
+            i,
+            format!("(claims {source} :at \"{at}\" :id \"{sentence_id}\"\n  {payload})\n"),
         ));
     }
 
     // Synthetic strict rules for commitment triggers (ADR-007): the trigger
     // body's provability surfaces as a reserved literal per commitment.
-    let commits: Vec<&Admitted> = admitted
-        .iter()
-        .filter(|a| matches!(a.act, SpeechAct::Commit { .. }))
-        .collect();
-    for a in &commits {
+    for (i, a) in admitted.iter().enumerate() {
         if a.retracted {
             continue;
         }
-        let SpeechAct::Commit {
+        if let SpeechAct::Commit {
             sentence_id,
             trigger,
             ..
         } = &a.act
-        else {
-            unreachable!()
-        };
-        if !trigger.trim().is_empty() {
-            spl.push_str(&format!(
-                "(always __ct-{sentence_id} {trigger} {TRIG_PREFIX}{sentence_id})\n"
-            ));
+        {
+            if !trigger.trim().is_empty() {
+                blocks.push((
+                    i,
+                    format!("(always __ct-{sentence_id} {trigger} {TRIG_PREFIX}{sentence_id})\n"),
+                ));
+            }
         }
     }
 
-    // 5–6: parse, reason at `now`, weight by trust.
-    let theory = spindle_parser::parse_spl(&spl)
-        .map_err(|e| AppError::Reasoner(format!("assembled theory unparseable: {e}")))?;
+    // 5: parse. Fast path: assemble everything and parse once. On failure
+    // (a residual label collision, or a payload spindle rejects only after
+    // claims-wrapping), fall back to adding blocks one at a time and
+    // quarantining any that break the parse — so a single toxic entry
+    // fails closed per-entry (REQ-022) instead of wedging the whole theory.
+    let assemble = |base: &str, blocks: &[(usize, String)]| -> String {
+        let mut s =
+            String::with_capacity(base.len() + blocks.iter().map(|(_, b)| b.len()).sum::<usize>());
+        s.push_str(base);
+        s.push('\n');
+        for (_, b) in blocks {
+            s.push_str(b);
+        }
+        s
+    };
+    let (spl, theory) = match spindle_parser::parse_spl(&assemble(local_trust_spl, &blocks)) {
+        Ok(theory) => (assemble(local_trust_spl, &blocks), theory),
+        Err(_) => {
+            // Incremental fail-closed rebuild.
+            let mut kept: Vec<(usize, String)> = Vec::new();
+            let mut acc = String::from(local_trust_spl);
+            acc.push('\n');
+            // The trust preamble alone must parse; if it does not, that is a
+            // configuration error the caller owns, surfaced as before.
+            spindle_parser::parse_spl(&acc)
+                .map_err(|e| AppError::Reasoner(format!("local trust policy unparseable: {e}")))?;
+            for (idx, block) in blocks {
+                let candidate = format!("{acc}{block}");
+                if spindle_parser::parse_spl(&candidate).is_ok() {
+                    acc = candidate;
+                    kept.push((idx, block));
+                } else {
+                    // This entry is toxic in combination — quarantine it.
+                    quarantined.push((
+                        admitted[idx].entry.clone(),
+                        Quarantine::BadPayload(
+                            "statement collides with the assembled theory (e.g. duplicate rule label)"
+                                .into(),
+                        ),
+                    ));
+                }
+            }
+            let _ = kept;
+            let theory = spindle_parser::parse_spl(&acc)
+                .map_err(|e| AppError::Reasoner(format!("assembled theory unparseable: {e}")))?;
+            (acc, theory)
+        }
+    };
+    let _ = &spl;
     let opts = PrepareOptions {
         reference_time: Some(TimePoint::from_millis(now_ms)),
         ..Default::default()
@@ -236,7 +295,10 @@ pub fn close(
         })
     };
     let mut commitments = Vec::new();
-    for a in &commits {
+    for a in admitted
+        .iter()
+        .filter(|a| matches!(a.act, SpeechAct::Commit { .. }))
+    {
         let SpeechAct::Commit {
             sentence_id,
             trigger,
@@ -411,6 +473,67 @@ mod tests {
     }
 
     const NOW: i64 = 1_784_000_000_000; // ≈ 2026-07-13
+
+    /// S3 fix (adversarial review): a statement valid alone but toxic in
+    /// combination (a label colliding with spindle's auto-numbering) must be
+    /// quarantined per-entry, never brick the whole closure (REQ-022).
+    #[test]
+    fn toxic_statement_is_quarantined_not_fatal() {
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(given a)");
+        f.assert_spl(1, "(normally f1 a b)");
+        f.assert_spl(1, "(normally s1 a c)");
+        f.assert_spl(1, "(given d)");
+        let c = f.close("", NOW);
+        assert!(
+            c.conclusions
+                .iter()
+                .any(|x| x.literal.name() == "a" && x.conclusion_type.is_positive()),
+            "uncontested fact must still derive"
+        );
+        assert!(
+            c.conclusions
+                .iter()
+                .any(|x| x.literal.name() == "d" && x.conclusion_type.is_positive()),
+            "later uncontested fact must still derive"
+        );
+    }
+
+    /// S3 fix: an entry whose `theory` field is the genesis sentinel but
+    /// which is NOT the real genesis is quarantined (cross-theory binding).
+    #[test]
+    fn spoofed_genesis_is_quarantined() {
+        use crate::core::envelope::{Entry, Hlc};
+        let k = key(1);
+        let hlc = Hlc {
+            wall_ms: 1_784_000_000_005,
+            logical: 0,
+            node_id: 1,
+        };
+        let spoof = Entry::create(
+            "genesis",
+            hlc,
+            &did(1),
+            &format!("{}#key-0", did(1)),
+            &SpeechAct::Assert {
+                sentence_id: "s-spoof".into(),
+                spl: "(given injected)".into(),
+            },
+            "2026-07-11T00:00:00Z",
+            &k,
+        );
+        let resolve = |d: &str, _k: &str| (d == did(1)).then(|| k.verifying_key());
+        let c = close(&[spoof], "th-real", "genesis", &resolve, "", NOW).unwrap();
+        assert_eq!(
+            c.quarantined.len(),
+            1,
+            "spoofed genesis must be quarantined"
+        );
+        assert!(
+            !c.conclusions.iter().any(|x| x.literal.name() == "injected"),
+            "spoofed-genesis statement must not influence closure"
+        );
+    }
 
     /// Basic derivation with provenance-wrapped claims (penguin-flavoured).
     #[test]

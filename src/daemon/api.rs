@@ -113,7 +113,21 @@ fn authorized(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .is_some_and(|t| t.as_bytes() == state.token.as_bytes())
+        .is_some_and(|t| constant_time_eq(t.as_bytes(), state.token.as_bytes()))
+}
+
+/// Length-independent, data-independent byte comparison: the token is a
+/// secret, and a short-circuiting `==` would leak it by timing to a
+/// co-located process. Mirrors the PAKE path's constant-time care.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 async fn ping() -> impl IntoResponse {

@@ -290,6 +290,8 @@ crypto review of the SPAKE2 ∘ MLS ∘ keybook composition.
 <details>
 <summary>Revision history</summary>
 
+- 0.1.1 — adversarial review round: wired `elephant theory remove` (REQ-305 was tested-but-uncalled) — MLS remove + keybook rotation + removal fact; a removed member is locked out of post-rotation entries (tested end-to-end through the CLI).
+
 - 0.1.0 — implemented: openmls 0.8 group per theory, sealed corpus, keybook, steward commits; removal-locks-out property tested end-to-end. Tier-1 crypto review of the SPAKE2∘MLS∘keybook composition remains open.
 
 - 0.1.0 — initial, added on stakeholder directive ("implement message

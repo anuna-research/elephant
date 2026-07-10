@@ -126,22 +126,39 @@ genesis creator).
 
 Trace: [[#TEST-105]] · [[#ADR-103]]
 
-#### REQ-106: Durable discovery
+> **Status note (v0.1, honest):** REQ-106/107/108 describe the
+> *steady-state* sync loop between already-joined members. In v0.1 the
+> join-time corpus handover ([[#REQ-104]] → the ceremony's final
+> `sync_session`) is implemented and tested (a joiner pulls the whole
+> history and both replicas converge with equal version vectors), and the
+> discovery/transport primitives (durable endpoint, DHT publish,
+> `sync_endpoint`/`dial_sync`, [[#CON-103]] `sync_session`) exist. What is
+> **not yet built** is the daemon's steady-state accept loop that runs the
+> roster gate and re-syncs after the initial join. These three REQs are
+> therefore `implementing`, not `implemented`; the [[#CON-103]] convergence
+> property and the transport binding are already covered. Tracked as the
+> primary v0.2 work.
+
+#### REQ-106: Durable discovery `[implementing]`
 
 The daemon SHALL publish, and republish before DHT expiry, a [[pkarr]]
 record under the agent's durable discovery key mapping to its current
 transport endpoint, and SHALL resolve peers' records to reconnect after
-address changes WITHOUT any operator action.
+address changes WITHOUT any operator action. (v0.1: the durable endpoint
+and DHT publish exist in `p2p::transport::sync_endpoint`; the periodic
+republish loop is v0.2.)
 
 Trace: [[#TEST-106]] · [[#CON-104]]
 
-#### REQ-107: Roster gate
+#### REQ-107: Roster gate `[implementing]`
 
 The daemon SHALL accept a sync connection for a theory only from a
 transport key bound to a member DID by the theory's roster
 ([[#REQ-105]]); non-members SHALL be refused before any sync frame is
 parsed. A resolved DHT record is an unauthenticated hint and SHALL
-confer no access by itself.
+confer no access by itself. (v0.1: the roster IS derivable from `member`
+facts and confidentiality is held by the seal regardless; the
+`ALPN_SYNC` accept loop that enforces the gate is v0.2.)
 
 Trace: [[#TEST-107]]
 
@@ -152,7 +169,8 @@ ship only missing updates ([[#CON-103]]); after exchange, both oplog
 version vectors SHALL be equal. Every remotely-received Entry passes
 merge-time validation ([[SPEC-001-elephant-core#REQ-022]]) before it can
 influence closure — transport authentication never substitutes for
-Entry verification.
+Entry verification. (v0.1: implemented and tested for the join-time
+handover; steady-state re-sync is v0.2 — see the status note above.)
 
 Trace: [[#TEST-108]] · [[#CON-103]]
 
@@ -377,6 +395,8 @@ structured audit line (invite id, outcome, no secrets).
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.1 — adversarial review round: single-writer discipline now enforced by a per-theory exclusive write lock (fixes silent lost updates on the direct-append and join-write paths); daemon bearer-token comparison made constant-time; REQ-106/107/108 status corrected to `implementing` (steady-state sync loop is v0.2).
 
 - 0.1.0 — implemented: daemon (loopback API, flock lifecycle, push watch), SPAKE2 join ceremony (proven over duplex), iroh QUIC transport + Mainline-DHT discovery wired (live loopback test ignored).
 

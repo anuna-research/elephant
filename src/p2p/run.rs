@@ -164,6 +164,70 @@ pub fn members(ctx: &Ctx, theory: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// `elephant theory remove <did>` (SPEC-004 REQ-305): steward removes a
+/// member. MLS-removes them (new epoch), rotates the corpus data key, and
+/// asserts the removal so closures reflect it. The removed member is locked
+/// out of every entry sealed after this point.
+pub fn remove_member(ctx: &Ctx, theory: &str, did: &str) -> AppResult<()> {
+    let ident = crate::id::load(&ctx.paths)?;
+    let mut store = TheoryStore::open(&ctx.paths, theory)?;
+    let theory_id = store.theory_id.clone();
+
+    let provider = crate::e2ee::open_provider(&ctx.paths, &theory_id)?;
+    let mls_ident = crate::e2ee::MlsIdentity::for_theory(&ident, &theory_id);
+    let mut group = crate::e2ee::load_group(&provider, &theory_id)?
+        .ok_or_else(|| AppError::Config("no MLS group for this theory".into()))?;
+
+    // Steward check: only the theory creator may remove (v0.1 single
+    // committer, SPEC-004 ADR-303). The creator is the genesis signer.
+    let (entries, _) = store.entries();
+    let creator = entries
+        .first()
+        .map(|g| g.signer.clone())
+        .ok_or_else(|| AppError::Config("empty corpus: no genesis".into()))?;
+    if creator != ident.did.to_string() {
+        return Err(AppError::Usage(
+            "only the theory's steward (creator) may remove members".into(),
+        ));
+    }
+
+    // MLS remove → new epoch (the commit would propagate once steady-state
+    // sync exists; see SPEC-002 REQ-108).
+    let _commit = crate::e2ee::remove_member(&provider, &mut group, &mls_ident, did)?;
+    // Rotate the corpus key: the removed member never receives the new keybook.
+    store.rotate_keybook()?;
+
+    // Record the removal as a signed corpus fact so the roster closure
+    // reflects it (REQ-305).
+    store.bind_identity(&ident)?;
+    let (wall_ms, ts) = crate::cli::now_pair();
+    let hlc = store.tick(&ident, wall_ms);
+    let sid = crate::core::envelope::Entry::sentence_id(&theory_id, ident.did.as_str(), hlc);
+    let entry = crate::core::envelope::Entry::create(
+        &theory_id,
+        hlc,
+        ident.did.as_str(),
+        &format!("{}#key-0", ident.did.as_str()),
+        &crate::core::envelope::SpeechAct::Assert {
+            sentence_id: sid,
+            spl: format!("(given (removed \"{did}\"))"),
+        },
+        &ts,
+        &ident.signing_key,
+    );
+    store.append(&entry)?;
+
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({"v":1, "theory": theory_id, "removed": did, "rotated": true})
+        );
+    } else {
+        println!("removed {did}; corpus key rotated");
+    }
+    Ok(())
+}
+
 fn prompt_code() -> AppResult<String> {
     use std::io::Write as _;
     eprint!("invite code: ");

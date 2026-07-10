@@ -697,6 +697,8 @@ audited crates; no novel constructions (no-go area respected).
 <details>
 <summary>Revision history</summary>
 
+- 0.1.1 — adversarial review round: fixed genesis-sentinel over-binding (spoofed-genesis entries now quarantined), widened source_atom to the full DID (no 64-bit trust-collision), and made closure fail closed per-entry when the assembled theory is unparseable (a toxic statement is quarantined, not fatal). Regression tests added.
+
 - 0.1.0 — implemented (identity, corpus, closure, commitments, queries). BUG-001 (duplicate-rule-label DoS) found by the convergence property test and fixed with deterministic label shadowing.
 
 - 0.1.0 — initial specification (Phase 1–2), derived from the goal

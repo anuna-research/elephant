@@ -162,6 +162,8 @@ pub enum TheoryCmd {
     },
     /// List members (closure-derived roster)
     Members { theory: String },
+    /// Remove a member (steward only): MLS-remove + rotate the corpus key
+    Remove { theory: String, did: String },
 }
 
 #[derive(Subcommand)]
@@ -726,6 +728,7 @@ fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
             crate::p2p::run::join_theory(ctx, code.as_deref(), alias.as_deref())
         }
         TheoryCmd::Members { theory } => crate::p2p::run::members(ctx, &theory),
+        TheoryCmd::Remove { theory, did } => crate::p2p::run::remove_member(ctx, &theory, &did),
     }
 }
 
