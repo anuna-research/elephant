@@ -211,3 +211,66 @@
 (normally r-propagate-closure-from-producers-permanently-failed permanently-failed-producers upstream-blocked-closure)
 (normally r-propagate-closure-from-producers-stale-v1 stale-v1-producers upstream-blocked-closure)
 (normally r-propagate-closure-from-producers-timeout-v1 timeout-v1-producers upstream-blocked-closure)
+
+(claims agent:claude
+  :at "2026-07-10T14:48:36Z"
+  (given completed-producers))
+
+(claims agent:claude
+  :at "2026-07-10T14:48:36Z"
+  (given claim-v1-closure)
+  (normally r-cl-state-v1-closure claim-v1-closure state-claimed-v1-closure)
+  (normally r-cl-chain-v1-closure state-claimed-v1-closure claimed-closure)
+)
+
+;; Propagation rules: failures in 'closure' block downstream tasks
+(normally r-propagate-commitments-from-closure-failed failed-closure upstream-blocked-commitments)
+(normally r-propagate-commitments-from-closure-permanently-failed permanently-failed-closure upstream-blocked-commitments)
+(normally r-propagate-commitments-from-closure-stale-v1 stale-v1-closure upstream-blocked-commitments)
+(normally r-propagate-commitments-from-closure-timeout-v1 timeout-v1-closure upstream-blocked-commitments)
+(normally r-propagate-queries-from-closure-failed failed-closure upstream-blocked-queries)
+(normally r-propagate-queries-from-closure-permanently-failed permanently-failed-closure upstream-blocked-queries)
+(normally r-propagate-queries-from-closure-stale-v1 stale-v1-closure upstream-blocked-queries)
+(normally r-propagate-queries-from-closure-timeout-v1 timeout-v1-closure upstream-blocked-queries)
+
+(claims agent:claude
+  :at "2026-07-10T14:52:37Z"
+  (given completed-closure))
+
+(claims agent:claude
+  :at "2026-07-10T14:52:37Z"
+  (given claim-v1-queries)
+  (normally r-cl-state-v1-queries claim-v1-queries state-claimed-v1-queries)
+  (normally r-cl-chain-v1-queries state-claimed-v1-queries claimed-queries)
+)
+
+;; Propagation rules: failures in 'queries' block downstream tasks
+(normally r-propagate-daemon-from-queries-failed failed-queries upstream-blocked-daemon)
+(normally r-propagate-daemon-from-queries-permanently-failed permanently-failed-queries upstream-blocked-daemon)
+(normally r-propagate-daemon-from-queries-stale-v1 stale-v1-queries upstream-blocked-daemon)
+(normally r-propagate-daemon-from-queries-timeout-v1 timeout-v1-queries upstream-blocked-daemon)
+(normally r-propagate-task-layer-from-queries-failed failed-queries upstream-blocked-task-layer)
+(normally r-propagate-task-layer-from-queries-permanently-failed permanently-failed-queries upstream-blocked-task-layer)
+(normally r-propagate-task-layer-from-queries-stale-v1 stale-v1-queries upstream-blocked-task-layer)
+(normally r-propagate-task-layer-from-queries-timeout-v1 timeout-v1-queries upstream-blocked-task-layer)
+
+(claims agent:claude
+  :at "2026-07-10T14:56:17Z"
+  (given completed-queries))
+
+(claims agent:claude
+  :at "2026-07-10T14:56:17Z"
+  (given claim-v1-commitments)
+  (normally r-cl-state-v1-commitments claim-v1-commitments state-claimed-v1-commitments)
+  (normally r-cl-chain-v1-commitments state-claimed-v1-commitments claimed-commitments)
+)
+
+;; Propagation rules: failures in 'commitments' block downstream tasks
+(normally r-propagate-hardening-from-commitments-failed failed-commitments upstream-blocked-hardening)
+(normally r-propagate-hardening-from-commitments-permanently-failed permanently-failed-commitments upstream-blocked-hardening)
+(normally r-propagate-hardening-from-commitments-stale-v1 stale-v1-commitments upstream-blocked-hardening)
+(normally r-propagate-hardening-from-commitments-timeout-v1 timeout-v1-commitments upstream-blocked-hardening)
+
+(claims agent:claude
+  :at "2026-07-10T14:56:17Z"
+  (given completed-commitments))

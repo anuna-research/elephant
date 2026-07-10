@@ -327,8 +327,281 @@ fn dispatch(cli: Cli) -> AppResult<()> {
     match cli.command {
         Command::Id(cmd) => handle_id(&ctx, cmd),
         Command::Theory(cmd) => handle_theory(&ctx, cmd),
+        Command::Assert(args) => produce_assert(&ctx, &args.spl),
+        Command::Task(TaskCmd::Assert(args)) => produce_assert(&ctx, &args.spl),
+        Command::Retract {
+            sentence_id,
+            reason,
+        } => produce_retract(&ctx, &sentence_id, reason.as_deref().unwrap_or("")),
+        Command::Promise { goal, when, by } => {
+            produce_promise(&ctx, &goal, when.as_deref(), by.as_deref())
+        }
+        Command::Request {
+            addressee,
+            goal,
+            when,
+        } => produce_request(&ctx, &addressee, &goal, when.as_deref()),
+        Command::Concede {
+            literal,
+            in_reply_to,
+        } => produce_concede(&ctx, &literal, &in_reply_to),
+        Command::Status { trust } | Command::Plan(PlanCmd::Status { trust }) => {
+            crate::queries::status(&ctx, trust)
+        }
+        Command::Explain { literal } | Command::Query(QueryCmd::Explain { literal }) => {
+            crate::queries::explain(&ctx, &literal)
+        }
+        Command::WhyNot { literal } | Command::Query(QueryCmd::WhyNot { literal }) => {
+            crate::queries::why_not(&ctx, &literal)
+        }
+        Command::Require { literal } | Command::Query(QueryCmd::Require { literal }) => {
+            crate::queries::require(&ctx, &literal)
+        }
+        Command::WhatIf { facts_then_goal }
+        | Command::Query(QueryCmd::WhatIf { facts_then_goal }) => {
+            crate::queries::what_if(&ctx, &facts_then_goal)
+        }
+        Command::Commitments => crate::queries::commitments(&ctx),
+        Command::Log => crate::queries::log(&ctx),
+        Command::Query(QueryCmd::Describe { labels }) => crate::queries::describe(&ctx, &labels),
+        Command::Query(QueryCmd::Trace) => crate::queries::trace(&ctx),
         _ => Err(AppError::Internal("not yet implemented".into())),
     }
+}
+
+// ── producers (SPEC-001 REQ-005..009) ──────────────────────────────────
+
+use crate::core::envelope::{Entry, SpeechAct};
+use crate::store::TheoryStore;
+
+struct Producer {
+    ident: crate::id::Identity,
+    store: TheoryStore,
+    hlc: crate::core::envelope::Hlc,
+    ts: String,
+}
+
+fn producer(ctx: &Ctx) -> AppResult<Producer> {
+    let theory = ctx
+        .theory
+        .as_deref()
+        .ok_or_else(|| AppError::Usage("no theory given: pass -t <theory> (id or alias)".into()))?;
+    let ident = crate::id::load(&ctx.paths)?;
+    let store = TheoryStore::open(&ctx.paths, theory)?;
+    store.bind_identity(&ident)?;
+    let (wall_ms, ts) = now_pair();
+    let hlc = store.tick(&ident, wall_ms);
+    Ok(Producer {
+        ident,
+        store,
+        hlc,
+        ts,
+    })
+}
+
+fn append_act(ctx: &Ctx, p: &Producer, act: SpeechAct, spl_form: &str) -> AppResult<()> {
+    let entry = Entry::create(
+        &p.store.theory_id,
+        p.hlc,
+        p.ident.did.as_str(),
+        &format!("{}#key-0", p.ident.did.as_str()),
+        &act,
+        &p.ts,
+        &p.ident.signing_key,
+    );
+    p.store.append(&entry)?;
+    let receipt = match &act {
+        SpeechAct::Assert { sentence_id, .. } | SpeechAct::Commit { sentence_id, .. } => {
+            sentence_id.clone()
+        }
+        SpeechAct::Request { request_id, .. } => request_id.clone(),
+        _ => Entry::sentence_id(&p.store.theory_id, &entry.signer, entry.hlc),
+    };
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "v": 1,
+                "receipt": receipt,
+                "theory": p.store.theory_id,
+                "signer": entry.signer,
+                "performative": act.performative(),
+                "spl_form": spl_form,
+            })
+        );
+    } else {
+        println!("{}  {}", act.performative(), receipt);
+    }
+    Ok(())
+}
+
+/// REQ-005: bare literals sugar to `(given …)`.
+fn sugar_spl(input: &str) -> String {
+    let t = input.trim();
+    if t.starts_with('(') {
+        t.to_string()
+    } else {
+        format!("(given {t})")
+    }
+}
+
+fn produce_assert(ctx: &Ctx, spl_in: &str) -> AppResult<()> {
+    let spl = sugar_spl(spl_in);
+    // Full recognition before anything is signed or stored (CON-001).
+    crate::core::envelope::validate_assert_payload(&spl)
+        .map_err(|q| AppError::Parse(q.to_string()))?;
+    let p = producer(ctx)?;
+    let sid = Entry::sentence_id(&p.store.theory_id, p.ident.did.as_str(), p.hlc);
+    let spl_form = spl
+        .trim_start_matches('(')
+        .split_whitespace()
+        .next()
+        .unwrap_or("?")
+        .to_string();
+    append_act(
+        ctx,
+        &p,
+        SpeechAct::Assert {
+            sentence_id: sid,
+            spl,
+        },
+        &spl_form,
+    )
+}
+
+fn produce_retract(ctx: &Ctx, target: &str, reason: &str) -> AppResult<()> {
+    let p = producer(ctx)?;
+    // Friendly pre-checks; the load-bearing E1 filter runs at closure time.
+    let (entries, _) = p.store.entries();
+    let target_entry = entries
+        .iter()
+        .find(|e| sentence_id_of(e).as_deref() == Some(target));
+    match target_entry {
+        None => {
+            return Err(AppError::NotFound(format!(
+                "no entry with sentence-id {target} in this theory"
+            )));
+        }
+        Some(e) if e.signer != p.ident.did.as_str() => {
+            return Err(AppError::E1(format!(
+                "{target} was signed by {}; only its signer can retract it",
+                e.signer
+            )));
+        }
+        Some(_) => {}
+    }
+    append_act(
+        ctx,
+        &p,
+        SpeechAct::Retract {
+            target: target.to_string(),
+            reason: reason.to_string(),
+        },
+        "retract",
+    )
+}
+
+fn produce_promise(ctx: &Ctx, goal: &str, when: Option<&str>, by: Option<&str>) -> AppResult<()> {
+    let trigger = when.unwrap_or("").trim().to_string();
+    if !trigger.is_empty() {
+        validate_spl_body(&trigger)?;
+    }
+    validate_spl_literal(goal)?;
+    if let Some(ts) = by {
+        let deadline = chrono::DateTime::parse_from_rfc3339(ts)
+            .map_err(|e| AppError::Parse(format!("--by is not RFC 3339: {e}")))?;
+        if deadline < chrono::Utc::now() {
+            return Err(AppError::Parse(format!(
+                "--by {ts} is in the past — a promise must have a future deadline"
+            )));
+        }
+    }
+    let p = producer(ctx)?;
+    let sid = Entry::sentence_id(&p.store.theory_id, p.ident.did.as_str(), p.hlc);
+    append_act(
+        ctx,
+        &p,
+        SpeechAct::Commit {
+            sentence_id: sid,
+            trigger,
+            by: by.map(str::to_string),
+            goal: goal.trim().to_string(),
+        },
+        "commit",
+    )
+}
+
+fn produce_request(ctx: &Ctx, addressee: &str, goal: &str, when: Option<&str>) -> AppResult<()> {
+    let trigger = when.unwrap_or("").trim().to_string();
+    if !trigger.is_empty() {
+        validate_spl_body(&trigger)?;
+    }
+    validate_spl_literal(goal)?;
+    let p = producer(ctx)?;
+    let rid = Entry::sentence_id(&p.store.theory_id, p.ident.did.as_str(), p.hlc);
+    append_act(
+        ctx,
+        &p,
+        SpeechAct::Request {
+            request_id: rid,
+            addressee: addressee.to_string(),
+            trigger,
+            goal: goal.trim().to_string(),
+        },
+        "request",
+    )
+}
+
+fn produce_concede(ctx: &Ctx, literal: &str, in_reply_to: &str) -> AppResult<()> {
+    validate_spl_literal(literal)?;
+    let p = producer(ctx)?;
+    let (entries, _) = p.store.entries();
+    let found = entries
+        .iter()
+        .any(|e| sentence_id_of(e).as_deref() == Some(in_reply_to));
+    if !found {
+        return Err(AppError::NotFound(format!(
+            "--re {in_reply_to}: no such sentence in this theory"
+        )));
+    }
+    append_act(
+        ctx,
+        &p,
+        SpeechAct::Concede {
+            literal: literal.trim().to_string(),
+            in_reply_to: in_reply_to.to_string(),
+        },
+        "concede",
+    )
+}
+
+/// The sentence-id an entry's own speech act carries (if any).
+pub(crate) fn sentence_id_of(e: &Entry) -> Option<String> {
+    match crate::core::envelope::parse_wire(&e.cbcl).ok()? {
+        SpeechAct::Assert { sentence_id, .. } | SpeechAct::Commit { sentence_id, .. } => {
+            Some(sentence_id)
+        }
+        SpeechAct::Request { request_id, .. } => Some(request_id),
+        _ => None,
+    }
+}
+
+/// Validate a body expression by wrapping it in a synthetic rule.
+fn validate_spl_body(body: &str) -> AppResult<()> {
+    spindle_parser::parse_spl(&format!("(normally __probe {body} __goal)"))
+        .map(|_| ())
+        .map_err(|e| AppError::Parse(format!("--when is not a valid SPL body: {e}")))
+}
+
+/// Validate a literal by wrapping it in a synthetic fact.
+fn validate_spl_literal(lit: &str) -> AppResult<()> {
+    let t = lit.trim();
+    if t.is_empty() {
+        return Err(AppError::Parse("empty literal".into()));
+    }
+    spindle_parser::parse_spl(&format!("(given {t})"))
+        .map(|_| ())
+        .map_err(|e| AppError::Parse(format!("'{t}' is not a valid SPL literal: {e}")))
 }
 
 pub fn now_pair() -> (u64, String) {

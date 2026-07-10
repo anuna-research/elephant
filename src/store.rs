@@ -107,7 +107,8 @@ impl TheoryStore {
             .to_bytes()
             .map_err(|e| AppError::Internal(format!("did doc: {e}")))?;
         std::fs::write(
-            dir.join("members").join(format!("{}.json", ident.did.method_specific_id())),
+            dir.join("members")
+                .join(format!("{}.json", ident.did.method_specific_id())),
             member_doc,
         )?;
 
@@ -160,7 +161,13 @@ impl TheoryStore {
         let list = self.doc.get_list(CORPUS_CONTAINER);
         let mut entries = Vec::new();
         let mut malformed = Vec::new();
-        for (i, v) in list.get_value().into_list().unwrap_or_default().iter().enumerate() {
+        for (i, v) in list
+            .get_value()
+            .into_list()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
             let Some(s) = v.as_string() else {
                 malformed.push((i, "non-string corpus element".to_string()));
                 continue;
@@ -333,9 +340,14 @@ mod tests {
     #[test]
     fn create_theory_and_reload() {
         let (_d, paths, ident) = setup();
-        let store =
-            TheoryStore::create(&paths, &ident, "release-v3", 1_752_000_000_000, "2026-07-11T00:00:00Z")
-                .unwrap();
+        let store = TheoryStore::create(
+            &paths,
+            &ident,
+            "release-v3",
+            1_752_000_000_000,
+            "2026-07-11T00:00:00Z",
+        )
+        .unwrap();
         assert_eq!(store.theory_id.len(), 64);
 
         let reopened = TheoryStore::open(&paths, "release-v3").unwrap();
