@@ -287,3 +287,20 @@
 (normally r-propagate-join-p2p-from-daemon-permanently-failed permanently-failed-daemon upstream-blocked-join-p2p)
 (normally r-propagate-join-p2p-from-daemon-stale-v1 stale-v1-daemon upstream-blocked-join-p2p)
 (normally r-propagate-join-p2p-from-daemon-timeout-v1 timeout-v1-daemon upstream-blocked-join-p2p)
+
+(claims agent:claude
+  :at "2026-07-10T15:10:09Z"
+  (given completed-daemon))
+
+(claims agent:claude
+  :at "2026-07-10T15:10:09Z"
+  (given claim-v1-e2ee)
+  (normally r-cl-state-v1-e2ee claim-v1-e2ee state-claimed-v1-e2ee)
+  (normally r-cl-chain-v1-e2ee state-claimed-v1-e2ee claimed-e2ee)
+)
+
+;; Propagation rules: failures in 'e2ee' block downstream tasks
+(normally r-propagate-join-p2p-from-e2ee-failed failed-e2ee upstream-blocked-join-p2p)
+(normally r-propagate-join-p2p-from-e2ee-permanently-failed permanently-failed-e2ee upstream-blocked-join-p2p)
+(normally r-propagate-join-p2p-from-e2ee-stale-v1 stale-v1-e2ee upstream-blocked-join-p2p)
+(normally r-propagate-join-p2p-from-e2ee-timeout-v1 timeout-v1-e2ee upstream-blocked-join-p2p)

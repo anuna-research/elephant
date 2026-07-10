@@ -376,6 +376,8 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Task(TaskCmd::Complete { task }) => crate::tasks::complete(&ctx, &task),
         Command::Task(TaskCmd::Block { task, reason }) => crate::tasks::block(&ctx, &task, &reason),
         Command::Task(TaskCmd::Unblock { task }) => crate::tasks::unblock(&ctx, &task),
+        Command::Daemon(cmd) => handle_daemon(&ctx, cmd),
+        Command::Watch { literal } => watch_cmd(&ctx, &literal),
         _ => Err(AppError::Internal("not yet implemented".into())),
     }
 }
@@ -420,7 +422,7 @@ fn append_act(ctx: &Ctx, p: &Producer, act: SpeechAct, spl_form: &str) -> AppRes
         &p.ts,
         &p.ident.signing_key,
     );
-    p.store.append(&entry)?;
+    route_append(ctx, &p.store, std::slice::from_ref(&entry))?;
     let receipt = match &act {
         SpeechAct::Assert { sentence_id, .. } | SpeechAct::Commit { sentence_id, .. } => {
             sentence_id.clone()
@@ -469,8 +471,19 @@ pub fn append_asserts(ctx: &Ctx, stmts: &[String]) -> AppResult<usize> {
         ));
         hlc.logical += 1;
     }
-    p.store.append_batch(&entries)?;
+    route_append(ctx, &p.store, &entries)?;
     Ok(entries.len())
+}
+
+/// Single-writer discipline (REQ-102): a live daemon owns store writes;
+/// otherwise write directly.
+fn route_append(ctx: &Ctx, store: &TheoryStore, entries: &[Entry]) -> AppResult<()> {
+    if let Some(rec) = live_daemon(ctx) {
+        crate::daemon::client::append(&rec, &store.theory_id, entries)?;
+        Ok(())
+    } else {
+        store.append_batch(entries)
+    }
 }
 
 /// REQ-005: bare literals sugar to `(given …)`.
@@ -751,5 +764,123 @@ fn print_identity(ctx: &Ctx, ident: &crate::id::Identity, created: bool) {
         println!("{}", ident.did);
         println!("agent:{}", ident.profile.name);
         println!("key   {}", ctx.paths.key_file().display());
+    }
+}
+
+// ── daemon lifecycle + watch (SPEC-002 REQ-101/102/109) ────────────────
+
+fn handle_daemon(ctx: &Ctx, cmd: DaemonCmd) -> AppResult<()> {
+    match cmd {
+        DaemonCmd::Run => crate::daemon::run(&ctx.paths),
+        DaemonCmd::Start => {
+            let rec = crate::daemon::start(&ctx.paths)?;
+            if ctx.json {
+                println!(
+                    "{}",
+                    serde_json::json!({"v":1, "pid": rec.pid, "addr": rec.addr,
+                        "started_at": rec.started_at})
+                );
+            } else {
+                println!("daemon running (pid {}, {})", rec.pid, rec.addr);
+            }
+            Ok(())
+        }
+        DaemonCmd::Status => match crate::daemon::classify(&ctx.paths) {
+            crate::daemon::Liveness::Live(rec) => {
+                let st = crate::daemon::client::status(&rec)?;
+                if ctx.json {
+                    println!("{st}");
+                } else {
+                    println!(
+                        "running  pid {}  uptime {}s  theories {}",
+                        st["pid"],
+                        st["uptime_s"],
+                        st["theories"].as_array().map(|a| a.len()).unwrap_or(0)
+                    );
+                }
+                Ok(())
+            }
+            other => {
+                if ctx.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"v":1, "running": false,
+                            "state": format!("{other:?}")})
+                    );
+                } else {
+                    println!("not running ({other:?})");
+                }
+                Ok(())
+            }
+        },
+        DaemonCmd::Stop => {
+            crate::daemon::stop(&ctx.paths)?;
+            if ctx.json {
+                println!("{}", serde_json::json!({"v":1, "stopped": true}));
+            } else {
+                println!("daemon stopped");
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Live daemon record, if any (REQ-102 single-writer routing).
+pub fn live_daemon(ctx: &Ctx) -> Option<crate::daemon::DiscoveryRecord> {
+    match crate::daemon::classify(&ctx.paths) {
+        crate::daemon::Liveness::Live(rec) => Some(rec),
+        _ => None,
+    }
+}
+
+/// REQ-017: stream tag changes until interrupted. With a live daemon this
+/// is push-based; without, a local poll loop (direct mode).
+fn watch_cmd(ctx: &Ctx, literal: &str) -> AppResult<()> {
+    let store = crate::store::TheoryStore::open(
+        &ctx.paths,
+        ctx.theory
+            .as_deref()
+            .ok_or_else(|| AppError::Usage("no theory given: pass -t <theory>".into()))?,
+    )?;
+    let theory_id = store.theory_id.clone();
+    drop(store);
+    if let Some(rec) = live_daemon(ctx) {
+        crate::daemon::client::watch(&rec, &theory_id, &[literal.to_string()], |ev| {
+            if ctx.json {
+                println!("{ev}");
+            } else {
+                println!(
+                    "{}  {}: {} → {}",
+                    ev["at"].as_str().unwrap_or(""),
+                    ev["literal"].as_str().unwrap_or(""),
+                    ev["old"].as_str().unwrap_or(""),
+                    ev["new"].as_str().unwrap_or("")
+                );
+            }
+        })
+    } else {
+        eprintln!("note: no daemon — watching local appends by polling");
+        let mut last: Option<String> = None;
+        loop {
+            let v = crate::queries::view(ctx)?;
+            let tags = crate::daemon::api::effective_tags(&v.closure);
+            let tag = tags.get(literal).cloned().unwrap_or_else(|| "-d".into());
+            if last.as_deref() != Some(tag.as_str()) {
+                let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                if let Some(old) = &last {
+                    if ctx.json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"theory": theory_id, "literal": literal,
+                                "old": old, "new": tag, "at": at})
+                        );
+                    } else {
+                        println!("{at}  {literal}: {old} → {tag}");
+                    }
+                }
+                last = Some(tag);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
     }
 }

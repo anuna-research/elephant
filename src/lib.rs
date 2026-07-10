@@ -11,6 +11,7 @@
 
 pub mod cli;
 pub mod core;
+pub mod daemon;
 pub mod errors;
 pub mod id;
 pub mod paths;

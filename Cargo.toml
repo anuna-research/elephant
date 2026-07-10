@@ -34,6 +34,14 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Daemon (SPEC-002; hark pattern: loopback axum + discovery record + flock)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+axum = "0.8"
+fs2 = "0.4"
+ureq = { version = "2", features = ["json"] }
+async-stream = "0.3"
+futures-core = "0.3"
+
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
