@@ -20,7 +20,13 @@ pub fn view(ctx: &Ctx) -> AppResult<View> {
         .theory
         .as_deref()
         .ok_or_else(|| AppError::Usage("no theory given: pass -t <theory> (id or alias)".into()))?;
-    let store = TheoryStore::open(&ctx.paths, theory)?;
+    let mut store = TheoryStore::open(&ctx.paths, theory)?;
+    // Apply pending MLS lane traffic (steward commits, rotated keybooks)
+    // before reading: a member that missed a rotation could not otherwise
+    // decrypt entries sealed under the new generation.
+    if crate::e2ee::process_mls_lane(&ctx.paths, &store)? {
+        store = TheoryStore::open(&ctx.paths, theory)?;
+    }
     let now_ms = match &ctx.at {
         Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
             .map_err(|e| AppError::Parse(format!("--at is not RFC 3339: {e}")))?

@@ -297,7 +297,12 @@ pub fn encrypt_app(
 /// What an inbound `mls` lane element turned out to be.
 #[derive(Debug)]
 pub enum Inbound {
-    Application(Vec<u8>),
+    /// An application message, with the authenticated sender DID — callers
+    /// gate on it (e.g. keybooks are only accepted from the steward).
+    Application {
+        sender_did: String,
+        bytes: Vec<u8>,
+    },
     CommitApplied,
     /// A commit whose epoch is ahead of ours; buffer and retry (REQ-306).
     Buffered,
@@ -330,9 +335,10 @@ pub fn process_inbound(
     };
     let sender_did = processed.credential().serialized_content().to_vec();
     match processed.into_content() {
-        ProcessedMessageContent::ApplicationMessage(app) => {
-            Ok(Inbound::Application(app.into_bytes()))
-        }
+        ProcessedMessageContent::ApplicationMessage(app) => Ok(Inbound::Application {
+            sender_did: String::from_utf8_lossy(&sender_did).to_string(),
+            bytes: app.into_bytes(),
+        }),
         ProcessedMessageContent::StagedCommitMessage(staged) => {
             if sender_did != steward_did.as_bytes() {
                 return Err(MlsError::Rejected(
@@ -369,6 +375,63 @@ pub fn open_provider(paths: &crate::paths::Paths, theory_id: &str) -> AppResult<
     let dir = paths.theory_dir(theory_id).join("mls");
     std::fs::create_dir_all(&dir)?;
     DurableProvider::open(&dir.join("state.bin")).map_err(Into::into)
+}
+
+/// Apply unseen `mls` lane elements (REQ-305/REQ-306): steward commits
+/// advance our epoch; steward application messages carry rotated keybooks,
+/// which are merged into the on-disk keybook. Returns true when the keybook
+/// changed — callers holding an open store should re-open it.
+///
+/// A cursor under `mls/lane.cursor` makes processing resumable. An
+/// epoch-ahead commit stops the scan (its predecessor has not synced in
+/// yet — retried next call); an element that fails to process is skipped —
+/// it is either one of our own messages echoed back, a replay, or garbage a
+/// member injected into the lane, none of which becomes processable later.
+pub fn process_mls_lane(
+    paths: &crate::paths::Paths,
+    store: &crate::store::TheoryStore,
+) -> AppResult<bool> {
+    let theory_id = store.theory_id.clone();
+    let lane = store.mls_lane();
+    let cursor_path = paths.theory_dir(&theory_id).join("mls").join("lane.cursor");
+    let mut cursor: usize = std::fs::read_to_string(&cursor_path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    if cursor >= lane.len() {
+        return Ok(false);
+    }
+    let provider = open_provider(paths, &theory_id)?;
+    let Some(mut group) = load_group(&provider, &theory_id)? else {
+        return Ok(false); // not (or no longer) a group member
+    };
+    let steward = store.steward()?;
+    let mut keybook_changed = false;
+    for bytes in &lane[cursor..] {
+        match process_inbound(&provider, &mut group, bytes, &steward) {
+            Ok(Inbound::Application { sender_did, bytes }) if sender_did == steward => {
+                if let Ok(theirs) = keybook::Keybook::from_bytes(&bytes) {
+                    let path = keybook::keybook_path(paths, &theory_id);
+                    let merged = match keybook::Keybook::load(&path)? {
+                        Some(mut mine) => mine.merge(&theirs).is_ok().then_some(mine),
+                        None => Some(theirs),
+                    };
+                    if let Some(kb) = merged {
+                        kb.save(&path)?;
+                        keybook_changed = true;
+                    }
+                }
+            }
+            Ok(Inbound::Buffered) => break,
+            Ok(_) | Err(_) => {}
+        }
+        cursor += 1;
+    }
+    if let Some(p) = cursor_path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    std::fs::write(&cursor_path, cursor.to_string())?;
+    Ok(keybook_changed)
 }
 
 #[cfg(test)]
@@ -445,7 +508,10 @@ mod tests {
         // Steward → member application message.
         let ct = encrypt_app(&alice.provider, &mut ag, &alice.mls, b"keybook").unwrap();
         match process_inbound(&bob.provider, &mut bg, &ct, &alice.did).unwrap() {
-            Inbound::Application(pt) => assert_eq!(pt, b"keybook"),
+            Inbound::Application { sender_did, bytes } => {
+                assert_eq!(bytes, b"keybook");
+                assert_eq!(sender_did, alice.did, "sender must be authenticated");
+            }
             _ => panic!("expected application message"),
         }
 

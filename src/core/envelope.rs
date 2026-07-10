@@ -534,6 +534,16 @@ pub fn entry_to_json(entry: &Entry) -> String {
     serde_json::to_string(entry).expect("Entry serialisation is infallible")
 }
 
+/// True iff `e` is the theory's actual genesis: it carries the sentinel AND
+/// its canonical bytes hash to the theory id. The sentinel alone is
+/// forgeable — any member can mint an entry with `theory = "genesis"` and an
+/// early HLC — so anything deriving authority from the genesis (the steward
+/// check, the closure's sentinel exemption) must use this binding, never
+/// corpus order.
+pub fn is_genesis(e: &Entry, theory_id: &str, sentinel: &str) -> bool {
+    e.theory == sentinel && blake3::hash(entry_to_json(e).as_bytes()).to_hex().as_str() == theory_id
+}
+
 pub fn entry_from_json(bytes: &str) -> AppResult<Entry> {
     serde_json::from_str(bytes).map_err(|e| AppError::Parse(format!("entry json: {e}")))
 }

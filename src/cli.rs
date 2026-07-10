@@ -393,6 +393,10 @@ struct Producer {
     store: TheoryStore,
     hlc: crate::core::envelope::Hlc,
     ts: String,
+    /// Held until the entries are appended (locally or via the daemon): the
+    /// HLC was allocated under this guard, and a concurrent same-identity
+    /// writer must not sign the same one (its sentence id would collide).
+    _clock: crate::store::ClockGuard,
 }
 
 fn producer(ctx: &Ctx) -> AppResult<Producer> {
@@ -401,8 +405,14 @@ fn producer(ctx: &Ctx) -> AppResult<Producer> {
         .as_deref()
         .ok_or_else(|| AppError::Usage("no theory given: pass -t <theory> (id or alias)".into()))?;
     let ident = crate::id::load(&ctx.paths)?;
-    let store = TheoryStore::open(&ctx.paths, theory)?;
+    let mut store = TheoryStore::open(&ctx.paths, theory)?;
+    // Apply pending MLS lane traffic first: a rotation delivered by sync
+    // must land in the on-disk keybook before we seal anything.
+    if crate::e2ee::process_mls_lane(&ctx.paths, &store)? {
+        store = TheoryStore::open(&ctx.paths, theory)?;
+    }
     store.bind_identity(&ident)?;
+    let clock = store.lock_clock()?;
     let (wall_ms, ts) = now_pair();
     let hlc = store.tick(&ident, wall_ms);
     Ok(Producer {
@@ -410,6 +420,7 @@ fn producer(ctx: &Ctx) -> AppResult<Producer> {
         store,
         hlc,
         ts,
+        _clock: clock,
     })
 }
 

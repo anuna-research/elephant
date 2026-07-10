@@ -86,7 +86,8 @@ fn removed_member_cannot_read_after_rotation() {
         current: 0,
     };
     match e2ee::process_inbound(&bob.provider, &mut bg, &kb_msg, &alice.did).unwrap() {
-        e2ee::Inbound::Application(bytes) => {
+        e2ee::Inbound::Application { sender_did, bytes } => {
+            assert_eq!(sender_did, alice.did, "keybook must come from the steward");
             bob_kb.merge(&Keybook::from_bytes(&bytes).unwrap()).unwrap();
         }
         other => panic!("expected the keybook application message, got {other:?}"),

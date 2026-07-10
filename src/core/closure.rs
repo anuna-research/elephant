@@ -111,11 +111,7 @@ pub fn close(
         // Without this check, any member could mint entries with
         // theory="genesis" that are bound to no theory and thus replay into
         // every theory they belong to (cross-theory binding hole).
-        let is_genesis = e.theory == genesis_sentinel
-            && blake3::hash(crate::core::envelope::entry_to_json(e).as_bytes())
-                .to_hex()
-                .as_str()
-                == theory_id;
+        let is_genesis = crate::core::envelope::is_genesis(e, theory_id, genesis_sentinel);
         let expected = if is_genesis {
             genesis_sentinel
         } else {
@@ -238,11 +234,11 @@ pub fn close(
         }
         s
     };
+    let mut fallback_rejected: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let (spl, theory) = match spindle_parser::parse_spl(&assemble(local_trust_spl, &blocks)) {
         Ok(theory) => (assemble(local_trust_spl, &blocks), theory),
         Err(_) => {
             // Incremental fail-closed rebuild.
-            let mut kept: Vec<(usize, String)> = Vec::new();
             let mut acc = String::from(local_trust_spl);
             acc.push('\n');
             // The trust preamble alone must parse; if it does not, that is a
@@ -253,9 +249,9 @@ pub fn close(
                 let candidate = format!("{acc}{block}");
                 if spindle_parser::parse_spl(&candidate).is_ok() {
                     acc = candidate;
-                    kept.push((idx, block));
                 } else {
                     // This entry is toxic in combination — quarantine it.
+                    fallback_rejected.insert(idx);
                     quarantined.push((
                         admitted[idx].entry.clone(),
                         Quarantine::BadPayload(
@@ -265,13 +261,23 @@ pub fn close(
                     ));
                 }
             }
-            let _ = kept;
             let theory = spindle_parser::parse_spl(&acc)
                 .map_err(|e| AppError::Reasoner(format!("assembled theory unparseable: {e}")))?;
             (acc, theory)
         }
     };
     let _ = &spl;
+    // A fallback-rejected entry is quarantined, not merely dropped from the
+    // parse: remove it from admission so it emits no commitment state below
+    // and no duplicate journal row.
+    if !fallback_rejected.is_empty() {
+        let mut i = 0;
+        admitted.retain(|_| {
+            let keep = !fallback_rejected.contains(&i);
+            i += 1;
+            keep
+        });
+    }
     let opts = PrepareOptions {
         reference_time: Some(TimePoint::from_millis(now_ms)),
         ..Default::default()
@@ -532,6 +538,44 @@ mod tests {
         assert!(
             !c.conclusions.iter().any(|x| x.literal.name() == "injected"),
             "spoofed-genesis statement must not influence closure"
+        );
+    }
+
+    /// A commit whose synthetic trigger block breaks the assembled parse is
+    /// quarantined AND excluded from admission: no commitment state may be
+    /// emitted for it, and it must not appear as both admitted and
+    /// quarantined in the journal.
+    #[test]
+    fn fallback_rejected_commit_is_fully_excluded() {
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(given a)");
+        let sid = f.next_sid(1);
+        f.add(
+            1,
+            SpeechAct::Commit {
+                sentence_id: sid.clone(),
+                trigger: ") not spl (".into(), // wrecks the synthetic rule
+                by: None,
+                goal: "a".into(),
+            },
+        );
+        let c = f.close("", NOW);
+        assert_eq!(c.quarantined.len(), 1, "toxic commit is quarantined");
+        assert!(
+            c.commitments.iter().all(|s| s.id != sid),
+            "a quarantined commit must not emit a commitment state"
+        );
+        assert!(
+            !c.admitted
+                .iter()
+                .any(|a| a.sid.as_deref() == Some(sid.as_str())),
+            "a quarantined commit must be removed from admission"
+        );
+        assert!(
+            c.conclusions
+                .iter()
+                .any(|x| x.literal.name() == "a" && x.conclusion_type.is_positive()),
+            "unrelated facts still derive"
         );
     }
 

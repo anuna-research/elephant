@@ -86,8 +86,12 @@ where
     let mut group = crate::e2ee::load_group(&provider, theory_id)?
         .ok_or_else(|| AppError::Config("no MLS group for this theory".into()))?;
     let kp = crate::e2ee::key_package_from_bytes(&provider, &hello.key_package, &hello.did)?;
-    let (_commit, welcome) = crate::e2ee::add_member(&provider, &mut group, &mls_ident, kp)?;
+    let (commit, welcome) = crate::e2ee::add_member(&provider, &mut group, &mls_ident, kp)?;
     write_frame(stream, &welcome).await?;
+    // Publish the Add commit to the `mls` lane so members other than this
+    // joiner advance to the new epoch when they next sync (REQ-108/REQ-306);
+    // without it they could not process a later removal commit.
+    store.push_mls(&[commit])?;
 
     // 6. Keybook, encrypted to the new MLS epoch (REQ-304): grants history.
     let keybook = store
@@ -99,6 +103,9 @@ where
     // 7. Membership fact into the corpus (REQ-105) — signed, auditable, the
     //    closure-derived roster.
     store.bind_identity(ident)?;
+    // HLC allocation and append under one clock guard: a concurrent
+    // same-identity writer must not sign the same (wall, logical).
+    let _clock = store.lock_clock()?;
     let (wall_ms, ts) = crate::cli::now_pair();
     let hlc = store.tick(ident, wall_ms);
     let sid = Entry::sentence_id(theory_id, ident.did.as_str(), hlc);
@@ -116,6 +123,7 @@ where
         &ident.signing_key,
     );
     store.append(&entry)?;
+    drop(_clock);
 
     // Persist the joiner's DID document for offline signature verification.
     let member_dir = paths.theory_dir(theory_id).join("members");
@@ -197,7 +205,9 @@ where
     let kb_msg = read_frame(stream).await?;
     let keybook =
         match crate::e2ee::process_inbound(&provider, &mut group, &kb_msg, &intro.steward_did)? {
-            crate::e2ee::Inbound::Application(bytes) => {
+            crate::e2ee::Inbound::Application { sender_did, bytes }
+                if sender_did == intro.steward_did =>
+            {
                 crate::e2ee::keybook::Keybook::from_bytes(&bytes)?
             }
             _ => return Err(AppError::Signature("auth-failed".into())),

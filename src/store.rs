@@ -13,6 +13,10 @@ use loro::{ExportMode, LoroDoc};
 use serde::{Deserialize, Serialize};
 
 pub const CORPUS_CONTAINER: &str = "corpus";
+/// Second list container in the same doc: MLS handshake traffic (steward
+/// commits) and MLS-encrypted keybook updates, riding every sync session
+/// (SPEC-002 REQ-108, SPEC-004 REQ-305/REQ-306).
+pub const MLS_CONTAINER: &str = "mls";
 /// Theory field value carried by a genesis entry (the id doesn't exist
 /// until the genesis bytes are hashed).
 pub const GENESIS_THEORY: &str = "genesis";
@@ -248,15 +252,22 @@ impl TheoryStore {
     /// (who therefore never receives the new keybook) cannot read anything
     /// written after this point. Existing entries stay readable via the
     /// earlier generations already in the keybook (ADR-302).
+    /// Rotation holds the same write lock as appends: an appender reloads
+    /// the keybook under that lock before sealing, so once rotation
+    /// completes no writer — however stale its in-memory keybook — can seal
+    /// another entry under the pre-removal generation.
     pub fn rotate_keybook(&mut self) -> AppResult<()> {
-        let kb = self.keybook.as_mut().ok_or_else(|| {
-            AppError::Config("no keybook for this theory (are you a member?)".into())
-        })?;
+        let _guard = self.write_lock()?;
+        let path = crate::e2ee::keybook::keybook_path(&self.paths, &self.theory_id);
+        let mut kb = crate::e2ee::keybook::Keybook::load(&path)?
+            .or_else(|| self.keybook.clone())
+            .ok_or_else(|| {
+                AppError::Config("no keybook for this theory (are you a member?)".into())
+            })?;
         kb.rotate();
-        kb.save(&crate::e2ee::keybook::keybook_path(
-            &self.paths,
-            &self.theory_id,
-        ))
+        kb.save(&path)?;
+        self.keybook = Some(kb);
+        Ok(())
     }
 
     /// All corpus entries, deserialised, in deterministic (hlc, signer)
@@ -330,7 +341,21 @@ impl TheoryStore {
     /// clobber. Loro's import is an idempotent CRDT merge, so re-reading is
     /// safe even mid-session.
     pub fn append_batch(&self, entries: &[Entry]) -> AppResult<()> {
-        let kb = self.keybook.as_ref().ok_or_else(|| {
+        let _guard = self.write_lock()?;
+        // Fold in anything another writer committed since we opened.
+        if let Ok(snapshot) = std::fs::read(self.paths.theory_doc(&self.theory_id)) {
+            let _ = self.doc.import(&snapshot);
+        }
+        // Reload the keybook under the lock: a rotation (member removal) may
+        // have minted a new generation since this store was opened, and
+        // sealing under the old one would leave the entry readable by the
+        // removed member.
+        let kb = crate::e2ee::keybook::Keybook::load(&crate::e2ee::keybook::keybook_path(
+            &self.paths,
+            &self.theory_id,
+        ))?
+        .or_else(|| self.keybook.clone())
+        .ok_or_else(|| {
             AppError::Config(format!(
                 "no keybook for theory {} — cannot seal (are you a member?)",
                 self.theory_id
@@ -339,12 +364,6 @@ impl TheoryStore {
         let key = kb
             .current_key()
             .ok_or_else(|| AppError::Config("keybook has no current key".into()))?;
-
-        let _guard = self.write_lock()?;
-        // Fold in anything another writer committed since we opened.
-        if let Ok(snapshot) = std::fs::read(self.paths.theory_doc(&self.theory_id)) {
-            let _ = self.doc.import(&snapshot);
-        }
         let list = self.doc.get_list(CORPUS_CONTAINER);
         for entry in entries {
             let sealed = crate::e2ee::seal::seal(entry, &self.theory_id, kb.current, &key)?;
@@ -373,6 +392,80 @@ impl TheoryStore {
     /// Append a locally-signed entry and persist (REQ-020: no network).
     pub fn append(&self, entry: &Entry) -> AppResult<()> {
         self.append_batch(std::slice::from_ref(entry))
+    }
+
+    /// Take the per-theory clock lock and fold in the latest on-disk
+    /// snapshot, so a subsequent `tick()` sees every entry a concurrent
+    /// writer has flushed. Producers hold the guard from `tick()` until
+    /// their signed entries are appended: two same-identity writers racing
+    /// from one snapshot in the same millisecond would otherwise sign
+    /// distinct entries carrying the same HLC — and therefore the same
+    /// sentence id, so one retraction of that receipt would tombstone both.
+    ///
+    /// A separate file from `write.lock`: the daemon append path takes the
+    /// write lock in another process while the CLI waits on its response,
+    /// so holding the write lock across tick→sign→append would deadlock.
+    pub fn lock_clock(&self) -> AppResult<ClockGuard> {
+        use fs2::FileExt as _;
+        let dir = self.paths.theory_dir(&self.theory_id);
+        std::fs::create_dir_all(&dir)?;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.join("clock.lock"))?;
+        f.lock_exclusive()
+            .map_err(|e| AppError::Transport(format!("theory clock lock: {e}")))?;
+        if let Ok(snapshot) = std::fs::read(self.paths.theory_doc(&self.theory_id)) {
+            let _ = self.doc.import(&snapshot);
+        }
+        Ok(ClockGuard { _file: f })
+    }
+
+    /// Publish MLS messages (steward commits, MLS-encrypted keybooks) to the
+    /// `mls` lane, so they ride every sync session. Only the steward's
+    /// messages carry authority; members verify that in
+    /// `e2ee::process_inbound` (REQ-306).
+    pub fn push_mls(&self, msgs: &[Vec<u8>]) -> AppResult<()> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+        let _guard = self.write_lock()?;
+        if let Ok(snapshot) = std::fs::read(self.paths.theory_doc(&self.theory_id)) {
+            let _ = self.doc.import(&snapshot);
+        }
+        let list = self.doc.get_list(MLS_CONTAINER);
+        for m in msgs {
+            list.push(B64.encode(m).as_str())
+                .map_err(|e| AppError::Internal(format!("loro push: {e}")))?;
+        }
+        self.doc.commit();
+        self.flush()
+    }
+
+    /// All `mls` lane elements in list order. Undecodable elements are
+    /// skipped — they cannot be valid MLS messages either.
+    pub fn mls_lane(&self) -> Vec<Vec<u8>> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+        self.doc
+            .get_list(MLS_CONTAINER)
+            .get_value()
+            .into_list()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| v.as_string().and_then(|s| B64.decode(s.as_bytes()).ok()))
+            .collect()
+    }
+
+    /// The theory's steward: the signer of the genesis entry, located by the
+    /// sentinel + hash binding (the one entry whose canonical bytes hash to
+    /// the theory id) — never by corpus order, which any member can steer
+    /// with a crafted early HLC.
+    pub fn steward(&self) -> AppResult<String> {
+        let (entries, _) = self.entries();
+        entries
+            .iter()
+            .find(|e| crate::core::envelope::is_genesis(e, &self.theory_id, GENESIS_THEORY))
+            .map(|g| g.signer.clone())
+            .ok_or_else(|| AppError::Config("corpus has no genesis entry".into()))
     }
 
     /// The theory's keybook, when this agent is a member (SPEC-004).
@@ -441,6 +534,11 @@ impl TheoryStore {
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
+}
+
+/// Guard for HLC allocation: releases the per-theory clock lock on drop.
+pub struct ClockGuard {
+    _file: std::fs::File,
 }
 
 fn escape(s: &str) -> String {
@@ -556,6 +654,138 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].0.alias, "a");
         assert_eq!(all[0].1, 1);
+    }
+
+    /// REQ-305: a writer whose in-memory keybook predates a rotation must
+    /// seal under the rotated generation — otherwise a removed member could
+    /// still read entries appended after their removal.
+    #[test]
+    fn stale_writer_seals_under_rotated_generation() {
+        let (_d, paths, ident) = setup();
+        let mut store =
+            TheoryStore::create(&paths, &ident, "t", 1000, "2026-07-11T00:00:00Z").unwrap();
+        // A second handle opened BEFORE the rotation (e.g. another process).
+        let stale = TheoryStore::open(&paths, "t").unwrap();
+        store.rotate_keybook().unwrap();
+
+        stale.bind_identity(&ident).unwrap();
+        let hlc = stale.tick(&ident, 2000);
+        let e = Entry::create(
+            &stale.theory_id,
+            hlc,
+            ident.did.as_str(),
+            &format!("{}#key-0", ident.did.as_str()),
+            &SpeechAct::Assert {
+                sentence_id: "s-late".into(),
+                spl: "(given late)".into(),
+            },
+            "2026-07-11T00:00:01Z",
+            &ident.signing_key,
+        );
+        stale.append(&e).unwrap();
+
+        let reopened = TheoryStore::open(&paths, "t").unwrap();
+        let generations: Vec<u32> = reopened
+            .doc
+            .get_list(CORPUS_CONTAINER)
+            .get_value()
+            .into_list()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_string().map(|s| s.to_string()))
+            .filter_map(|s| crate::e2ee::seal::from_json(&s).ok())
+            .map(|s| s.generation)
+            .collect();
+        assert_eq!(
+            generations.last(),
+            Some(&1),
+            "the stale writer must pick up generation 1 under the write lock: {generations:?}"
+        );
+    }
+
+    /// Two same-identity writers racing from one snapshot in the same
+    /// millisecond must not allocate the same HLC — the sentence id derives
+    /// from it, and a duplicated id makes one retraction tombstone both.
+    #[test]
+    fn clock_lock_serializes_hlc_allocation() {
+        let (_d, paths, ident) = setup();
+        let store_a =
+            TheoryStore::create(&paths, &ident, "t", 1000, "2026-07-11T00:00:00Z").unwrap();
+        // Second writer, opened from the same snapshot before A appends.
+        let store_b = TheoryStore::open(&paths, "t").unwrap();
+
+        let wall = 5000u64;
+        let hlc_a = {
+            let _guard = store_a.lock_clock().unwrap();
+            let hlc = store_a.tick(&ident, wall);
+            let e = Entry::create(
+                &store_a.theory_id,
+                hlc,
+                ident.did.as_str(),
+                &format!("{}#key-0", ident.did.as_str()),
+                &SpeechAct::Assert {
+                    sentence_id: Entry::sentence_id(&store_a.theory_id, ident.did.as_str(), hlc),
+                    spl: "(given a)".into(),
+                },
+                "2026-07-11T00:00:01Z",
+                &ident.signing_key,
+            );
+            store_a.append(&e).unwrap();
+            hlc
+        };
+        // B allocates at the same wall time; the clock guard's re-import
+        // must fold in A's flushed entry, or B would mint the same HLC.
+        let _guard = store_b.lock_clock().unwrap();
+        let hlc_b = store_b.tick(&ident, wall);
+        assert!(
+            hlc_b > hlc_a,
+            "second writer must see the first append: {hlc_b:?} vs {hlc_a:?}"
+        );
+    }
+
+    /// A member-crafted entry carrying the genesis sentinel and an early HLC
+    /// sorts first in the corpus but must not displace the steward: the
+    /// genesis is located by its hash binding, not corpus order.
+    #[test]
+    fn forged_early_genesis_does_not_confer_stewardship() {
+        let (_d, paths, ident) = setup();
+        let store =
+            TheoryStore::create(&paths, &ident, "t", 1_000_000, "2026-07-11T00:00:00Z").unwrap();
+
+        let m_dir = tempfile::tempdir().unwrap();
+        let m_paths = Paths {
+            home: m_dir.path().to_path_buf(),
+        };
+        let mallory = crate::id::create(&m_paths, Some("mallory".into())).unwrap();
+        let forged = Entry::create(
+            GENESIS_THEORY,
+            Hlc {
+                wall_ms: 1, // far before the real genesis
+                logical: 0,
+                node_id: 9,
+            },
+            mallory.did.as_str(),
+            &format!("{}#key-0", mallory.did.as_str()),
+            &SpeechAct::Assert {
+                sentence_id: "s-forged".into(),
+                spl: "(given injected)".into(),
+            },
+            "2026-07-11T00:00:00Z",
+            &mallory.signing_key,
+        );
+        store.append(&forged).unwrap();
+
+        let (entries, _) = store.entries();
+        assert_eq!(
+            entries.first().unwrap().signer,
+            mallory.did.to_string(),
+            "attack premise: the forged entry sorts first"
+        );
+        assert_eq!(
+            store.steward().unwrap(),
+            ident.did.to_string(),
+            "steward must be the hash-bound genesis signer"
+        );
     }
 
     /// HLC ticks are strictly monotone even with a stuck wall clock.
