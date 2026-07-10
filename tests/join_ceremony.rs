@@ -66,6 +66,7 @@ async fn happy_path_join_and_sync() {
                 &a_paths,
                 &a_ident,
                 &tid,
+                "rdv:1234",
                 &password,
                 "endpoint-hint",
             )
@@ -76,13 +77,15 @@ async fn happy_path_join_and_sync() {
     let joiner = tokio::spawn({
         let password = password.clone();
         async move {
+            let _ = &tid2;
             p2p::join::joiner_side(
                 &mut sb,
                 &b_paths,
                 &b_ident,
-                &tid2,
+                "rdv:1234",
                 &password,
                 "bob-node-pk",
+                None,
                 Some("release"),
             )
             .await
@@ -157,11 +160,31 @@ async fn wrong_code_fails_closed_with_no_partial_state() {
     let (mut sa, mut sb) = duplex(1024 * 1024);
     let (a_paths, a_ident, tid) = (alice.paths.clone(), alice.ident, theory_id.clone());
     let inviter = tokio::spawn(async move {
-        p2p::join::inviter_side(&mut sa, &a_paths, &a_ident, &tid, "abandon-ability", "hint").await
+        p2p::join::inviter_side(
+            &mut sa,
+            &a_paths,
+            &a_ident,
+            &tid,
+            "rdv:1",
+            "abandon-ability",
+            "hint",
+        )
+        .await
     });
     let (b_paths, b_ident, tid2) = (bob.paths.clone(), bob.ident, theory_id.clone());
     let joiner = tokio::spawn(async move {
-        p2p::join::joiner_side(&mut sb, &b_paths, &b_ident, &tid2, "zebra-zone", "pk", None).await
+        let _ = &tid2;
+        p2p::join::joiner_side(
+            &mut sb,
+            &b_paths,
+            &b_ident,
+            "rdv:1",
+            "zebra-zone",
+            "pk",
+            None,
+            None,
+        )
+        .await
     });
 
     let ir = inviter.await.unwrap();
@@ -180,9 +203,10 @@ async fn wrong_code_fails_closed_with_no_partial_state() {
     );
 }
 
-/// A code minted for one theory cannot complete against another.
+/// A mismatched SPAKE2 hint (different routing number) cannot complete —
+/// the hint is bound into the SPAKE2 identity.
 #[tokio::test]
-async fn theory_binding_enforced() {
+async fn spake_hint_binding_enforced() {
     let alice = machine("alice");
     let bob = machine("bob");
     let store = TheoryStore::create(
@@ -199,18 +223,28 @@ async fn theory_binding_enforced() {
     let (mut sa, mut sb) = duplex(1024 * 1024);
     let (a_paths, a_ident, tid) = (alice.paths.clone(), alice.ident, theory_id.clone());
     let inviter = tokio::spawn(async move {
-        p2p::join::inviter_side(&mut sa, &a_paths, &a_ident, &tid, "abandon-ability", "h").await
+        p2p::join::inviter_side(
+            &mut sa,
+            &a_paths,
+            &a_ident,
+            &tid,
+            "rdv:1234",
+            "abandon-ability",
+            "h",
+        )
+        .await
     });
     let (b_paths, b_ident) = (bob.paths.clone(), bob.ident);
     let joiner = tokio::spawn(async move {
-        // Bob uses the right words but the wrong theory hint.
+        // Bob uses the right words but a different routing hint.
         p2p::join::joiner_side(
             &mut sb,
             &b_paths,
             &b_ident,
-            "some-other-theory-id",
+            "rdv:9999",
             "abandon-ability",
             "pk",
+            None,
             None,
         )
         .await

@@ -321,3 +321,7 @@
 (normally r-propagate-hardening-from-join-p2p-permanently-failed permanently-failed-join-p2p upstream-blocked-hardening)
 (normally r-propagate-hardening-from-join-p2p-stale-v1 stale-v1-join-p2p upstream-blocked-hardening)
 (normally r-propagate-hardening-from-join-p2p-timeout-v1 timeout-v1-join-p2p upstream-blocked-hardening)
+
+(claims agent:claude
+  :at "2026-07-10T15:50:30Z"
+  (given completed-join-p2p))

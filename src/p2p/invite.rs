@@ -83,6 +83,13 @@ impl Invite {
         Invite { number, w1, w2 }
     }
 
+    /// The SPAKE2 identity hint: the public routing number. Shared by both
+    /// sides via the code; the theory id is NOT used (the joiner does not
+    /// know it until the sealed introduction).
+    pub fn rendezvous_hint(&self) -> String {
+        format!("rdv:{}", self.number)
+    }
+
     /// Rendezvous keypair seed: `HKDF(number)` — routing only (ADR-102).
     /// The words are NOT an input: they must never reach the DHT.
     pub fn rendezvous_seed(&self) -> [u8; 32] {

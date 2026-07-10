@@ -721,9 +721,11 @@ fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
             }
             Ok(())
         }
-        _ => Err(AppError::Internal(
-            "not yet implemented (SPEC-002 join-p2p task)".into(),
-        )),
+        TheoryCmd::Invite { theory, ttl } => crate::p2p::run::invite(ctx, &theory, &ttl),
+        TheoryCmd::Join { code, alias } => {
+            crate::p2p::run::join_theory(ctx, code.as_deref(), alias.as_deref())
+        }
+        TheoryCmd::Members { theory } => crate::p2p::run::members(ctx, &theory),
     }
 }
 

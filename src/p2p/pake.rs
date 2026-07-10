@@ -19,7 +19,7 @@
 use crate::errors::{AppError, AppResult};
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use hmac::{Hmac, Mac as _};
+use hmac::Hmac;
 use sha2::Sha256;
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 
@@ -179,10 +179,7 @@ pub struct Introduction {
     pub steward_did: String,
     #[serde(with = "b64v_pub")]
     pub steward_did_doc: Vec<u8>,
-    /// MLS Welcome for the joiner (SPEC-004).
-    #[serde(with = "b64v_pub")]
-    pub welcome: Vec<u8>,
-    /// Inviter transport address hint (iroh NodeAddr, serialized).
+    /// Inviter transport address hint (iroh EndpointAddr, serialized).
     pub endpoint: String,
 }
 
@@ -280,7 +277,6 @@ mod tests {
             alias: "release".into(),
             steward_did: "did:crdt:aa".into(),
             steward_did_doc: b"{}".to_vec(),
-            welcome: b"welcome-bytes".to_vec(),
             endpoint: "node-addr".into(),
         };
         let sealed = seal_intro(&intro, &ka).unwrap();
@@ -319,7 +315,6 @@ mod tests {
             alias: "a".into(),
             steward_did: "did:crdt:aa".into(),
             steward_did_doc: vec![],
-            welcome: vec![],
             endpoint: String::new(),
         };
         let sealed = seal_intro(&intro, &ka).unwrap();

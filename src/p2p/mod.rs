@@ -3,4 +3,6 @@
 pub mod invite;
 pub mod join;
 pub mod pake;
+pub mod run;
+pub mod transport;
 pub mod wire;

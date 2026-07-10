@@ -37,6 +37,8 @@ base64 = "0.22"
 # P2P join (SPEC-002): SPAKE2 + DHT rendezvous
 spake2 = "0.4"
 hmac = "0.12"
+iroh = "1.0"
+iroh-mainline-address-lookup = "0.4"
 base64ct = { version = "1", features = ["alloc"] }
 
 # CLI & serialisation

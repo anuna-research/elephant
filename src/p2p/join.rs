@@ -1,9 +1,25 @@
 //! The join ceremony choreography (SPEC-002 REQ-104/105/110/111).
 //!
 //! Written against `AsyncRead + AsyncWrite`, so the whole choreography —
-//! SPAKE2, key confirmation, MLS Welcome, sealed introduction, corpus sync —
-//! runs identically over an iroh QUIC bi-stream and over an in-memory duplex
-//! in tests. Failures after code entry are remotely opaque (`auth-failed`).
+//! SPAKE2, key confirmation, sealed introduction, MLS Welcome, keybook,
+//! corpus sync — runs identically over an iroh QUIC bi-stream and over an
+//! in-memory duplex in tests. Failures after code entry are remotely opaque
+//! (`auth-failed`).
+//!
+//! Wire order (each side's step numbers match):
+//! ```text
+//!   SPAKE2 msgs        (both)
+//!   confirmation MACs  (both)
+//!   I → J  sealed introduction   (theory id, steward DID doc, endpoint)
+//!   J → I  joiner hello          (DID, DID doc, node key, MLS KeyPackage)
+//!   I → J  MLS Welcome           (built for THIS joiner's package)
+//!   I → J  keybook               (MLS application message)
+//!   sync session                 (both)
+//! ```
+//! The introduction precedes the joiner's hello because the joiner needs
+//! the theory id to derive its per-theory MLS leaf key before it can build
+//! a KeyPackage. SPAKE2 is bound to the invite's public routing hint, not
+//! the theory id — the joiner does not know the theory id yet.
 
 use super::pake::{self, Handshake, Introduction, Side};
 use super::wire::{read_frame, sync_session, write_frame};
@@ -16,49 +32,33 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 /// What the inviter (steward) runs once a joiner connects to the rendezvous.
 ///
-/// `theory_hint` is bound into the SPAKE2 identity; we use the theory id so
-/// a code minted for one theory cannot complete against another.
+/// `spake_hint` is bound into the SPAKE2 identity — the invite's public
+/// routing component, shared by both sides via the code.
+#[allow(clippy::too_many_arguments)]
 pub async fn inviter_side<S>(
     stream: &mut S,
     paths: &Paths,
     ident: &Identity,
     theory_id: &str,
+    spake_hint: &str,
     password: &str,
     endpoint_hint: &str,
 ) -> AppResult<String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // 1. SPAKE2
-    let (hs, ours) = Handshake::start(password, theory_id, Side::Inviter);
+    // 1–2. SPAKE2 + key confirmation BEFORE any payload (REQ-104).
+    let (hs, ours) = Handshake::start(password, spake_hint, Side::Inviter);
     write_frame(stream, &ours).await?;
     let theirs = read_frame(stream).await?;
     let (keys, confirm) = hs.finish(&theirs)?;
-
-    // 2. Key confirmation BEFORE any payload (REQ-104).
     write_frame(stream, &confirm.ours(&keys)).await?;
     let peer_mac = read_frame(stream).await?;
     confirm.verify_peer(&keys, &peer_mac)?;
 
-    // 3. The joiner proves which DID it is and offers its MLS KeyPackage.
-    //    Both are now inside a channel authenticated by the shared secret.
-    let hello = read_frame(stream).await?;
-    let hello: JoinerHello = serde_json::from_slice(&hello)
-        .map_err(|e| AppError::Transport(format!("bad joiner hello: {e}")))?;
-    if hello.v != JOINER_HELLO_VERSION {
-        return Err(AppError::Signature("auth-failed".into()));
-    }
-
-    // 4. MLS Add (steward-only commit) → Welcome for the joiner.
+    // 3. Sealed introduction — the joiner learns the theory id (and can now
+    //    derive its per-theory MLS leaf key).
     let store = TheoryStore::open(paths, theory_id)?;
-    let provider = crate::e2ee::open_provider(paths, theory_id)?;
-    let mls_ident = crate::e2ee::MlsIdentity::for_theory(ident, theory_id);
-    let mut group = crate::e2ee::load_group(&provider, theory_id)?
-        .ok_or_else(|| AppError::Config("no MLS group for this theory".into()))?;
-    let kp = crate::e2ee::key_package_from_bytes(&provider, &hello.key_package, &hello.did)?;
-    let (_commit, welcome) = crate::e2ee::add_member(&provider, &mut group, &mls_ident, kp)?;
-
-    // 5. Sealed introduction: theory identity + steward DID doc + Welcome.
     let intro = Introduction {
         v: pake::INTRO_VERSION,
         theory_id: theory_id.to_string(),
@@ -68,21 +68,36 @@ where
             .document
             .to_bytes()
             .map_err(|e| AppError::Internal(format!("did doc: {e}")))?,
-        welcome,
         endpoint: endpoint_hint.to_string(),
     };
     write_frame(stream, &pake::seal_intro(&intro, &keys)?).await?;
 
-    // 6. The keybook, encrypted to the new MLS epoch (REQ-304): only a
-    //    current member can read it, and it grants the whole history.
+    // 4. Joiner hello: DID + MLS KeyPackage (built for this theory).
+    let hello = read_frame(stream).await?;
+    let hello: JoinerHello = serde_json::from_slice(&hello)
+        .map_err(|e| AppError::Transport(format!("bad joiner hello: {e}")))?;
+    if hello.v != JOINER_HELLO_VERSION {
+        return Err(AppError::Signature("auth-failed".into()));
+    }
+
+    // 5. MLS Add (steward-only commit) → Welcome; send it framed.
+    let provider = crate::e2ee::open_provider(paths, theory_id)?;
+    let mls_ident = crate::e2ee::MlsIdentity::for_theory(ident, theory_id);
+    let mut group = crate::e2ee::load_group(&provider, theory_id)?
+        .ok_or_else(|| AppError::Config("no MLS group for this theory".into()))?;
+    let kp = crate::e2ee::key_package_from_bytes(&provider, &hello.key_package, &hello.did)?;
+    let (_commit, welcome) = crate::e2ee::add_member(&provider, &mut group, &mls_ident, kp)?;
+    write_frame(stream, &welcome).await?;
+
+    // 6. Keybook, encrypted to the new MLS epoch (REQ-304): grants history.
     let keybook = store
         .keybook()
         .ok_or_else(|| AppError::Config("no keybook for this theory".into()))?;
     let kb_msg = crate::e2ee::encrypt_app(&provider, &mut group, &mls_ident, &keybook.to_bytes())?;
     write_frame(stream, &kb_msg).await?;
 
-    // 7. Membership fact into the corpus (REQ-105) — auditable, signed,
-    //    and derivable as the roster by every member's closure.
+    // 7. Membership fact into the corpus (REQ-105) — signed, auditable, the
+    //    closure-derived roster.
     store.bind_identity(ident)?;
     let (wall_ms, ts) = crate::cli::now_pair();
     let hlc = store.tick(ident, wall_ms);
@@ -102,7 +117,7 @@ where
     );
     store.append(&entry)?;
 
-    // Persist the joiner's DID document so their signatures verify offline.
+    // Persist the joiner's DID document for offline signature verification.
     let member_dir = paths.theory_dir(theory_id).join("members");
     std::fs::create_dir_all(&member_dir)?;
     let did_tail = hello.did.rsplit(':').next().unwrap_or(&hello.did);
@@ -116,20 +131,26 @@ where
 /// What the joiner runs after resolving the rendezvous.
 ///
 /// On any failure the joiner is left with no partial theory state (REQ-104).
+/// `spake_hint` is the invite's public routing component; `expected_theory`
+/// pins which theory the joiner intends to join (defence against a
+/// rendezvous that offers a different theory than advertised).
+#[allow(clippy::too_many_arguments)] // each is a distinct ceremony input;
+// a params struct would only relocate the list (SPEC-002 REQ-104)
 pub async fn joiner_side<S>(
     stream: &mut S,
     paths: &Paths,
     ident: &Identity,
-    theory_hint: &str,
+    spake_hint: &str,
     password: &str,
     node_pk: &str,
+    expected_theory: Option<&str>,
     alias_override: Option<&str>,
 ) -> AppResult<String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     // 1–2. SPAKE2 + confirmation.
-    let (hs, ours) = Handshake::start(password, theory_hint, Side::Joiner);
+    let (hs, ours) = Handshake::start(password, spake_hint, Side::Joiner);
     let theirs = read_frame(stream).await?;
     write_frame(stream, &ours).await?;
     let (keys, confirm) = hs.finish(&theirs)?;
@@ -137,11 +158,19 @@ where
     confirm.verify_peer(&keys, &peer_mac)?;
     write_frame(stream, &confirm.ours(&keys)).await?;
 
-    // 3. Offer our DID + MLS KeyPackage. The theory id is not known yet, so
-    //    the KeyPackage is bound to the hint (which IS the theory id — the
-    //    inviter published it under the rendezvous record).
-    let provider = crate::e2ee::open_provider(paths, theory_hint)?;
-    let mls_ident = crate::e2ee::MlsIdentity::for_theory(ident, theory_hint);
+    // 3. Sealed introduction → learn the theory id and steward DID.
+    let intro = pake::open_intro(&read_frame(stream).await?, &keys)?;
+    if let Some(want) = expected_theory {
+        if want != intro.theory_id {
+            return Err(AppError::Signature("auth-failed".into()));
+        }
+    }
+    let theory_id = intro.theory_id.clone();
+
+    // 4. Now that we know the theory, derive the leaf key and offer a
+    //    KeyPackage bound to our DID.
+    let provider = crate::e2ee::open_provider(paths, &theory_id)?;
+    let mls_ident = crate::e2ee::MlsIdentity::for_theory(ident, &theory_id);
     let (_bundle, key_package) = crate::e2ee::build_key_package(&provider, &mls_ident)?;
     let hello = JoinerHello {
         v: JOINER_HELLO_VERSION,
@@ -159,17 +188,12 @@ where
     )
     .await?;
 
-    // 4. Sealed introduction.
-    let intro = pake::open_intro(&read_frame(stream).await?, &keys)?;
-    if intro.theory_id != theory_hint {
-        return Err(AppError::Signature("auth-failed".into()));
-    }
+    // 5. MLS Welcome → join the group, verifying the steward is the DID from
+    //    the authenticated introduction (REQ-302).
+    let welcome = read_frame(stream).await?;
+    let mut group = crate::e2ee::join_from_welcome(&provider, &welcome, &intro.steward_did)?;
 
-    // 5. Join the MLS group from the Welcome, verifying the steward is the
-    //    DID we just authenticated (REQ-302).
-    let mut group = crate::e2ee::join_from_welcome(&provider, &intro.welcome, &intro.steward_did)?;
-
-    // 6. Read the keybook from the MLS application message.
+    // 6. Keybook from the MLS application message.
     let kb_msg = read_frame(stream).await?;
     let keybook =
         match crate::e2ee::process_inbound(&provider, &mut group, &kb_msg, &intro.steward_did)? {
@@ -179,13 +203,13 @@ where
             _ => return Err(AppError::Signature("auth-failed".into())),
         };
 
-    // 7. Materialise the theory locally — only now do we touch the store,
-    //    so a failure above leaves nothing behind.
+    // 7. Materialise the theory locally — only now do we touch the store, so
+    //    a failure above leaves nothing behind.
     let alias = alias_override.unwrap_or(&intro.alias);
     let store = TheoryStore::adopt(
         paths,
         ident,
-        &intro.theory_id,
+        &theory_id,
         alias,
         keybook,
         &intro.steward_did,
@@ -193,9 +217,9 @@ where
     )?;
 
     // 8. Pull the corpus.
-    sync_session(stream, &intro.theory_id, store.doc()).await?;
+    sync_session(stream, &theory_id, store.doc()).await?;
     store.flush_public()?;
-    Ok(intro.theory_id)
+    Ok(theory_id)
 }
 
 pub const JOINER_HELLO_VERSION: u16 = 1;
