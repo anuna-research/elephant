@@ -15,17 +15,17 @@ test: ## Run all tests
 check: test lint ## Tests + lint
 
 lint: ## rustfmt --check + clippy -D warnings
-	cargo fmt --all -- --check
+	cargo fmt -p elephant -- --check
 	cargo clippy --all-targets -- -D warnings
 
 clippy:
 	cargo clippy --all-targets -- -D warnings
 
 fmt:
-	cargo fmt --all -- --check
+	cargo fmt -p elephant -- --check
 
 fmt-fix: ## Apply rustfmt
-	cargo fmt --all
+	cargo fmt -p elephant
 
 bench: ## Criterion benches (NFR gates)
 	cargo bench

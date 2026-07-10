@@ -1,0 +1,74 @@
+; Elephant: speech-act dialect for agents that exchange logical sentences.
+; Inspired by John McCarthy's "Elephant 2000" proposal
+; (https://www-formal.stanford.edu/jmc/elephant/elephant.html).
+;
+; Each performative carries an SPL-form payload (Spindle Lisp,
+; https://codeberg.org/anuna/spindle-rust), so that the message body
+; is itself a defeasible-logic sentence or rule that a peer's reasoner
+; can ingest unchanged. The dialect provides the speech-act envelope
+; (illocutionary force + identity); the SPL payload provides the
+; propositional content.
+
+(define cbcl-elephant (cbcl) @logic-agents-consortium
+  (:resource-requirements
+    ((max-depth 12)
+     (max-expansion-size 1024)
+     (verification-time 50)))
+
+  ; Assertive: introduce a fact or rule into the shared theory.
+  ; sentence-id is a stable handle the asserter chooses (used by retract).
+  ; spl is a single SPL form, e.g. (given bird), (normally r1 bird flies),
+  ; or (prefer r2 r1).
+  (extend assert (sentence-id spl)
+    (tell @theory-store
+      (assertion :id sentence-id :content spl)
+      :domain elephant))
+
+  ; Retraction: withdraw a previously-asserted sentence by id.
+  (extend retract (sentence-id reason)
+    (tell @theory-store
+      (retraction :id sentence-id :reason reason)
+      :domain elephant))
+
+  ; Interrogative: ask whether a literal is provable, optionally with
+  ; an explanation. Status answers are 'provable | 'refuted | 'unknown,
+  ; matching the spindle reasoner's status vocabulary.
+  (extend query (literal explanation-requested)
+    (ask @reasoner
+      (query-request :literal literal :explain explanation-requested)
+      :domain elephant))
+
+  ; Concession: accept the addressee's literal as part of one's own
+  ; theory (the move that ends a McCarthy-style negotiation by
+  ; conceding a disputed claim).
+  (extend concede (literal in-reply-to)
+    (tell @addressee
+      (concession :literal literal :in-reply-to in-reply-to)
+      :domain elephant))
+
+  ; Commissive: bind the speaker to achieve goal whenever
+  ; trigger-conditions become provable. Per McCarthy, commitments
+  ; persist as first-class agent state; sentence-id is the handle
+  ; under which the commitment is recorded.
+  (extend commit (sentence-id trigger-conditions goal)
+    (tell @commitment-ledger
+      (commitment :id sentence-id
+        :when trigger-conditions :achieves goal)
+      :domain elephant))
+
+  ; Directive: ask the addressee to make a commitment. The addressee
+  ; may reply with a corresponding 'commit' (acceptance) or a
+  ; 'concede'/'retract' on the requested goal (refusal).
+  (extend request (request-id addressee trigger-conditions goal)
+    (ask addressee
+      (request-for-commitment :id request-id
+        :when trigger-conditions :achieves goal)
+      :domain elephant))
+
+  ; Justification: share the supporting rule chain (a list of SPL
+  ; rule forms) that licenses a previously-asserted conclusion.
+  ; Used when a peer responds to a query with explanation-requested.
+  (extend justify (conclusion-id premises)
+    (tell @reasoner
+      (justification :conclusion conclusion-id :premises premises)
+      :domain elephant)))

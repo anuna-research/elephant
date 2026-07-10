@@ -58,8 +58,7 @@ Load-bearing: [[#REQ-005]] assert · [[#REQ-006]] retract ·
 [[#REQ-007]] promise · [[#REQ-015]] commitment states ·
 [[#REQ-021]] closure determinism · [[#REQ-022]] merge-time validation.
 
-Open: group-key encryption of corpora (deferred, see [[SPEC-002-elephant-p2p#ADR-105]],
-owner HOC) · wire `query`/`justify` performatives unused in v0.1
+Open: wire `query`/`justify` performatives unused in v0.1
 ([[#ADR-010]], owner HOC) · revocation of membership
 ([[SPEC-002-elephant-p2p#ADR-104]], owner HOC).
 

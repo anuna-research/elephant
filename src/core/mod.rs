@@ -3,4 +3,5 @@
 //! Everything here is a deterministic function of its arguments; wall time
 //! enters only as an explicit `TimePoint` parameter.
 
+pub mod dialect;
 pub mod envelope;

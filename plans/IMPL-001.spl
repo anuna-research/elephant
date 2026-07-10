@@ -1,0 +1,213 @@
+;; elephant-3000 — implementation plan (hence)
+;;
+;; Executes SPEC-001 (core), SPEC-002 (p2p/daemon), SPEC-003 (hence-successor
+;; task layer), SPEC-004 (MLS E2EE). Milestones: M1 identity+store+assert,
+;; M2 closure+queries+commitments, M3 task layer, M4 daemon, M5 E2EE+p2p,
+;; M6 docs+hardening.
+
+(meta plan
+  (id "IMPL-001")
+  (title "elephant-3000 implementation")
+  (version "0.1.0")
+  (status "active")
+  (created "2026-07-11")
+  (author "hugo.oconnor@gmail.com")
+  (description "Build the elephant CLI+daemon per SPEC-001..004 on cbcl-rs, spindle-rust, did-crdt, loro, spake2, pkarr, iroh, openmls."))
+
+(given agent-claude-available)
+
+;; ─── tasks ──────────────────────────────────────────────────
+(given task-shell-scaffold)      ;; errors/exit codes, paths, clap tree, tracing
+(given task-identity)            ;; REQ-001/002, CON-005, Signer impl
+(given task-envelope)            ;; CON-002/003 Entry build/sign/verify, dialect pin
+(given task-store)               ;; ADR-002 Loro store, theory create/list (REQ-003/004)
+(given task-producers)           ;; REQ-005..009 assert/retract/promise/request/concede
+(given task-closure)             ;; CON-003 pipeline: tombstone, claims wrap, reason
+(given task-queries)             ;; REQ-010..014, 016 status/explain/why-not/require/what-if/log
+(given task-commitments)         ;; REQ-015 state table
+(given task-task-layer)          ;; SPEC-003 REQ-201..210 hence bundles, board, next
+(given task-daemon)              ;; SPEC-002 REQ-101/102 lifecycle, control API, watch
+(given task-e2ee)                ;; SPEC-004 MLS group, sealed entries, keybook
+(given task-join-p2p)            ;; SPEC-002 REQ-103..111 invite/join/discovery/sync
+(given task-hardening)           ;; fuzz targets, property tests, NFR benches
+(given task-docs)                ;; README, user guide, spec status update
+
+(given no-deps-shell-scaffold)
+
+(meta task-shell-scaffold
+  (description "Exit-code contract (SPEC-001 REQ-024, hark errors.rs pattern), state-dir module (CON-005), clap command tree with --json plumbing, tracing to stderr.")
+  (acceptance "cargo test passes; elephant --help shows full tree; exit-code unit test pins the contract"))
+(meta task-identity
+  (description "elephant id create/whoami: ed25519 seed file 0600 load_or_create (hark identity.rs pattern), did:crdt Document::new genesis, profile.toml, r4 Signer impl over the key.")
+  (acceptance "TEST-001/TEST-002 pass incl. refusal to overwrite and perms check"))
+(meta task-envelope
+  (description "Entry (CON-002): canonical JSON, signing_input, sentence-id receipts; cbcl-elephant wire build (CON-003) via cbcl-parser; dialect load + hash pin; merge-time validation → quarantine (REQ-022).")
+  (acceptance "TEST-022, TEST-027 roundtrip property pass; oracle vectors for signing_input"))
+(meta task-store
+  (description "Loro store: one doc per theory, corpus list, HLC ordering, genesis + theory id (REQ-003), list (REQ-004), deterministic iteration.")
+  (acceptance "TEST-003/TEST-004 pass; reload from disk preserves corpus"))
+(meta task-producers
+  (description "assert/retract/promise/request/concede commands per REQ-005..009 incl. SPL pre-parse (CON-001), sugar for bare literals, past-deadline rejection.")
+  (acceptance "TEST-005..TEST-009 pass"))
+(meta task-closure
+  (description "CON-003 pure pipeline: verify → parse → E1 tombstone filter → claims wrapping from envelopes (ADR-012) → parse_spl → reason_with_options → weighted conclusions.")
+  (acceptance "TEST-021 order-shuffle property passes; TEST-006 E1 semantics pass"))
+(meta task-queries
+  (description "status/explain/why-not/require/what-if/log per REQ-010..014,016 with hence-compatible query group spellings (SPEC-003 REQ-208) and CON-004 JSON.")
+  (acceptance "TEST-010..TEST-014, TEST-016, TEST-019 pass"))
+(meta task-commitments
+  (description "Commitment extraction from commit/retract entries + state table (REQ-015) in pure core; elephant commitments command.")
+  (acceptance "TEST-015 five-state walk passes incl. no-regress-on-clock"))
+(meta task-task-layer
+  (description "SPEC-003: hence chain bundles byte-compatible (claim/unclaim/complete/block/unblock), propagation rules, board buckets + JSON, next with fallback, join-as, plan template/info.")
+  (acceptance "TEST-201..TEST-210 pass; TEST-211 migration oracle diff vs hence 0.7 empty"))
+(meta task-daemon
+  (description "SPEC-002 REQ-101/102: flock+discovery-record lifecycle with probe classification (hark daemon.rs pattern), loopback axum control API (CON-101), CLI proxy-or-direct fallback, watch NDJSON (REQ-109/REQ-017).")
+  (acceptance "TEST-101/TEST-102/TEST-109 pass under the TestEnv harness"))
+(meta task-e2ee
+  (description "SPEC-004: openmls group per theory, DID-bound credential, HKDF leaf key, SealedEntry AEAD with keygen'd data keys, keybook distribution, steward-only commits, removal → rotation; durable provider snapshot (hark mls/provider.rs pattern).")
+  (acceptance "SPEC-004 TEST-301..TEST-308 pass; removed member cannot decrypt post-rotation entries"))
+(meta task-join-p2p
+  (description "SPEC-002 REQ-103..111: invite codes (CON-102 ABNF, single recogniser), HKDF rendezvous keypair, pkarr publish/resolve + republish, spake2 symmetric + HMAC confirm, iroh connect, MLS Welcome handover, roster gate, Loro vv delta sync (CON-103), opaque failures, single-use burn.")
+  (acceptance "TEST-103..TEST-111 pass; two-process localhost join e2e green"))
+(meta task-hardening
+  (description "cargo-fuzz targets (entry JSON, SPL arg, invite code, control body, sealed entry), proptest convergence (TEST-114), criterion NFR benches (TEST-025/TEST-112).")
+  (acceptance "fuzz targets build and run clean 60s each; benches within NFR budgets"))
+(meta task-docs
+  (description "README per protocol template, user-guide happy-path docs, spec statuses → implemented, zetl check --fail-on error clean, final adversarial review pass.")
+  (acceptance "README complete; zetl clean; review findings resolved or filed"))
+
+;; ─── readiness ──────────────────────────────────────────────
+(normally r-ready-shell-scaffold (and task-shell-scaffold no-deps-shell-scaffold) ready-shell-scaffold)
+(normally r-ready-identity (and task-identity completed-shell-scaffold) ready-identity)
+(normally r-ready-envelope (and task-envelope completed-identity) ready-envelope)
+(normally r-ready-store (and task-store completed-envelope) ready-store)
+(normally r-ready-producers (and task-producers completed-store) ready-producers)
+(normally r-ready-closure (and task-closure completed-producers) ready-closure)
+(normally r-ready-queries (and task-queries completed-closure) ready-queries)
+(normally r-ready-commitments (and task-commitments completed-closure) ready-commitments)
+(normally r-ready-task-layer (and task-task-layer completed-queries) ready-task-layer)
+(normally r-ready-daemon (and task-daemon completed-queries) ready-daemon)
+(normally r-ready-e2ee (and task-e2ee completed-store) ready-e2ee)
+(normally r-ready-join-p2p (and task-join-p2p completed-daemon completed-e2ee) ready-join-p2p)
+(normally r-ready-hardening (and task-hardening completed-task-layer completed-commitments completed-join-p2p) ready-hardening)
+(normally r-ready-docs (and task-docs completed-hardening) ready-docs)
+
+;; ─── assignment ─────────────────────────────────────────────
+(normally r-assign-shell-scaffold (and ready-shell-scaffold agent-claude-available) assign-to-shell-scaffold-claude)
+(normally r-assign-identity (and ready-identity agent-claude-available) assign-to-identity-claude)
+(normally r-assign-envelope (and ready-envelope agent-claude-available) assign-to-envelope-claude)
+(normally r-assign-store (and ready-store agent-claude-available) assign-to-store-claude)
+(normally r-assign-producers (and ready-producers agent-claude-available) assign-to-producers-claude)
+(normally r-assign-closure (and ready-closure agent-claude-available) assign-to-closure-claude)
+(normally r-assign-queries (and ready-queries agent-claude-available) assign-to-queries-claude)
+(normally r-assign-commitments (and ready-commitments agent-claude-available) assign-to-commitments-claude)
+(normally r-assign-task-layer (and ready-task-layer agent-claude-available) assign-to-task-layer-claude)
+(normally r-assign-daemon (and ready-daemon agent-claude-available) assign-to-daemon-claude)
+(normally r-assign-e2ee (and ready-e2ee agent-claude-available) assign-to-e2ee-claude)
+(normally r-assign-join-p2p (and ready-join-p2p agent-claude-available) assign-to-join-p2p-claude)
+(normally r-assign-hardening (and ready-hardening agent-claude-available) assign-to-hardening-claude)
+(normally r-assign-docs (and ready-docs agent-claude-available) assign-to-docs-claude)
+
+(claims agent:claude
+  :at "2026-07-10T14:28:00Z"
+  (given claim-v1-shell-scaffold)
+  (normally r-cl-state-v1-shell-scaffold claim-v1-shell-scaffold state-claimed-v1-shell-scaffold)
+  (normally r-cl-chain-v1-shell-scaffold state-claimed-v1-shell-scaffold claimed-shell-scaffold)
+)
+
+;; Propagation rules: failures in 'shell-scaffold' block downstream tasks
+(normally r-propagate-identity-from-shell-scaffold-failed failed-shell-scaffold upstream-blocked-identity)
+(normally r-propagate-identity-from-shell-scaffold-permanently-failed permanently-failed-shell-scaffold upstream-blocked-identity)
+(normally r-propagate-identity-from-shell-scaffold-stale-v1 stale-v1-shell-scaffold upstream-blocked-identity)
+(normally r-propagate-identity-from-shell-scaffold-timeout-v1 timeout-v1-shell-scaffold upstream-blocked-identity)
+(normally r-propagate-identity-from-shell-scaffold-blocked upstream-blocked-shell-scaffold upstream-blocked-identity)
+
+;; Transitive propagation: upstream-blocked cascades through dependency chain
+(normally r-propagate-envelope-from-identity-blocked upstream-blocked-identity upstream-blocked-envelope)
+(normally r-propagate-store-from-envelope-blocked upstream-blocked-envelope upstream-blocked-store)
+(normally r-propagate-e2ee-from-store-blocked upstream-blocked-store upstream-blocked-e2ee)
+(normally r-propagate-producers-from-store-blocked upstream-blocked-store upstream-blocked-producers)
+(normally r-propagate-join-p2p-from-e2ee-blocked upstream-blocked-e2ee upstream-blocked-join-p2p)
+(normally r-propagate-closure-from-producers-blocked upstream-blocked-producers upstream-blocked-closure)
+(normally r-propagate-hardening-from-join-p2p-blocked upstream-blocked-join-p2p upstream-blocked-hardening)
+(normally r-propagate-commitments-from-closure-blocked upstream-blocked-closure upstream-blocked-commitments)
+(normally r-propagate-queries-from-closure-blocked upstream-blocked-closure upstream-blocked-queries)
+(normally r-propagate-docs-from-hardening-blocked upstream-blocked-hardening upstream-blocked-docs)
+(normally r-propagate-hardening-from-commitments-blocked upstream-blocked-commitments upstream-blocked-hardening)
+(normally r-propagate-daemon-from-queries-blocked upstream-blocked-queries upstream-blocked-daemon)
+(normally r-propagate-task-layer-from-queries-blocked upstream-blocked-queries upstream-blocked-task-layer)
+(normally r-propagate-join-p2p-from-daemon-blocked upstream-blocked-daemon upstream-blocked-join-p2p)
+(normally r-propagate-hardening-from-task-layer-blocked upstream-blocked-task-layer upstream-blocked-hardening)
+
+(claims agent:claude
+  :at "2026-07-10T14:33:41Z"
+  (given completed-shell-scaffold))
+
+(claims agent:claude
+  :at "2026-07-10T14:33:41Z"
+  (given claim-v1-identity)
+  (normally r-cl-state-v1-identity claim-v1-identity state-claimed-v1-identity)
+  (normally r-cl-chain-v1-identity state-claimed-v1-identity claimed-identity)
+)
+
+;; Propagation rules: failures in 'identity' block downstream tasks
+(normally r-propagate-envelope-from-identity-failed failed-identity upstream-blocked-envelope)
+(normally r-propagate-envelope-from-identity-permanently-failed permanently-failed-identity upstream-blocked-envelope)
+(normally r-propagate-envelope-from-identity-stale-v1 stale-v1-identity upstream-blocked-envelope)
+(normally r-propagate-envelope-from-identity-timeout-v1 timeout-v1-identity upstream-blocked-envelope)
+
+(claims agent:claude
+  :at "2026-07-10T14:36:21Z"
+  (given completed-identity))
+
+(claims agent:claude
+  :at "2026-07-10T14:36:21Z"
+  (given claim-v1-envelope)
+  (normally r-cl-state-v1-envelope claim-v1-envelope state-claimed-v1-envelope)
+  (normally r-cl-chain-v1-envelope state-claimed-v1-envelope claimed-envelope)
+)
+
+;; Propagation rules: failures in 'envelope' block downstream tasks
+(normally r-propagate-store-from-envelope-failed failed-envelope upstream-blocked-store)
+(normally r-propagate-store-from-envelope-permanently-failed permanently-failed-envelope upstream-blocked-store)
+(normally r-propagate-store-from-envelope-stale-v1 stale-v1-envelope upstream-blocked-store)
+(normally r-propagate-store-from-envelope-timeout-v1 timeout-v1-envelope upstream-blocked-store)
+
+(claims agent:claude
+  :at "2026-07-10T14:43:35Z"
+  (given completed-envelope))
+
+(claims agent:claude
+  :at "2026-07-10T14:43:35Z"
+  (given claim-v1-store)
+  (normally r-cl-state-v1-store claim-v1-store state-claimed-v1-store)
+  (normally r-cl-chain-v1-store state-claimed-v1-store claimed-store)
+)
+
+;; Propagation rules: failures in 'store' block downstream tasks
+(normally r-propagate-e2ee-from-store-failed failed-store upstream-blocked-e2ee)
+(normally r-propagate-e2ee-from-store-permanently-failed permanently-failed-store upstream-blocked-e2ee)
+(normally r-propagate-e2ee-from-store-stale-v1 stale-v1-store upstream-blocked-e2ee)
+(normally r-propagate-e2ee-from-store-timeout-v1 timeout-v1-store upstream-blocked-e2ee)
+(normally r-propagate-producers-from-store-failed failed-store upstream-blocked-producers)
+(normally r-propagate-producers-from-store-permanently-failed permanently-failed-store upstream-blocked-producers)
+(normally r-propagate-producers-from-store-stale-v1 stale-v1-store upstream-blocked-producers)
+(normally r-propagate-producers-from-store-timeout-v1 timeout-v1-store upstream-blocked-producers)
+
+(claims agent:claude
+  :at "2026-07-10T14:45:42Z"
+  (given completed-store))
+
+(claims agent:claude
+  :at "2026-07-10T14:45:42Z"
+  (given claim-v1-producers)
+  (normally r-cl-state-v1-producers claim-v1-producers state-claimed-v1-producers)
+  (normally r-cl-chain-v1-producers state-claimed-v1-producers claimed-producers)
+)
+
+;; Propagation rules: failures in 'producers' block downstream tasks
+(normally r-propagate-closure-from-producers-failed failed-producers upstream-blocked-closure)
+(normally r-propagate-closure-from-producers-permanently-failed permanently-failed-producers upstream-blocked-closure)
+(normally r-propagate-closure-from-producers-stale-v1 stale-v1-producers upstream-blocked-closure)
+(normally r-propagate-closure-from-producers-timeout-v1 timeout-v1-producers upstream-blocked-closure)

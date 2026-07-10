@@ -40,8 +40,8 @@ Structure:
 Decisions: [[#ADR-101]] iroh QUIC transport · [[#ADR-102]] symmetric
 SPAKE2 join with routing/secret split · [[#ADR-103]] membership as
 signed corpus facts · [[#ADR-104]] revocation deferred ·
-[[#ADR-105]] no group-key encryption in v0.1 · [[#ADR-106]] JSON control
-protocol on a 0600 socket.
+[[#ADR-105]] corpus E2EE lives in [[SPEC-004-elephant-e2ee]] ·
+[[#ADR-106]] loopback-HTTP control plane (hark pattern).
 
 Load-bearing: [[#REQ-104]] join ceremony · [[#REQ-107]] roster gate ·
 [[#REQ-108]] delta sync · [[#REQ-110]] single-use invites ·
@@ -249,15 +249,14 @@ grow-only corpus. // SIMPLIFY: no revocation; ceiling: first real
 multi-tenant deployment or compromised member; upgrade path: epoch'd
 roster + connection refusal per SPEC-047 REQ-481 (trace: this ADR).
 
-#### ADR-105: No group-key corpus encryption in v0.1
+#### ADR-105: Corpus E2EE via MLS — superseded deferral
 
-Transport is encrypted (iroh); corpus at rest is plaintext on member
-machines; the sealed introduction protects only the join handshake.
-Confidentiality against a DHT observer: rendezvous and discovery records
-contain endpoints only, never corpus data. // SIMPLIFY: no e2e group
-key; ceiling: theories with confidentiality requirements against
-storage-level adversaries; upgrade path: SPEC-047 ADR-477 group key +
-epoch rotation (trace: this ADR).
+Originally this ADR deferred group-key encryption. Superseded the same
+day by stakeholder directive: end-to-end encryption is REQUIRED and is
+specified in [[SPEC-004-elephant-e2ee]] (MLS group per theory, sealed
+entries, keybook, steward commits). Residual scope kept here:
+rendezvous and discovery records still contain endpoints only, never
+corpus data, and the DHT observer analysis is unchanged.
 
 #### ADR-106: Control protocol = loopback HTTP + bearer token (the hark pattern)
 
