@@ -336,3 +336,11 @@
   (normally r-cl-state-v1-docs claim-v1-docs state-claimed-v1-docs)
   (normally r-cl-chain-v1-docs state-claimed-v1-docs claimed-docs)
 )
+
+(claims agent:claude
+  :at "2026-07-10T16:20:31Z"
+  (given completed-docs))
+
+(claims agent:claude
+  :at "2026-07-10T16:21:12Z"
+  (given completed-task-layer))
