@@ -1,0 +1,5 @@
+[toolchain]
+# Track latest stable, matching the sibling Anuna repos (zetl, spindle-rust).
+# spindle-core is edition 2024, so the floor is 1.85.
+channel = "stable"
+components = ["rustfmt", "clippy"]

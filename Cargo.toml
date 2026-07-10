@@ -1,0 +1,46 @@
+[package]
+name = "elephant"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://codeberg.org/anuna/elephant-3000"
+description = "Speech-act coordination on shared defeasible theories — Elephant 2000 made computable"
+
+[dependencies]
+# Anuna stack (path deps; unpublished — SPEC-001 §1)
+cbcl-core = { path = "../cbcl-rs/crates/cbcl-core", features = ["std", "serde"] }
+cbcl-parser = { path = "../cbcl-rs/crates/cbcl-parser", features = ["std", "serde"] }
+spindle-core = { path = "../spindle-rust/crates/spindle-core", features = ["serde"] }
+spindle-parser = { path = "../spindle-rust/crates/spindle-parser" }
+did-crdt = { path = "../did-crdt" } # default features = pure core (ADR-003)
+
+# CRDT corpus (ADR-002)
+loro = "1.13"
+
+# Crypto & ids
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+blake3 = "1"
+base64ct = { version = "1", features = ["alloc"] }
+
+# CLI & serialisation
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
