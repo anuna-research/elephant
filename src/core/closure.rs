@@ -23,6 +23,9 @@ pub struct Admitted {
     pub sid: Option<String>,
     /// True when an E1-valid retraction excluded this entry from the theory.
     pub retracted: bool,
+    /// True when this assert's explicit rule label was already defined by an
+    /// earlier entry, so it was dropped from closure (first-by-hlc wins).
+    pub label_shadowed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +123,7 @@ pub fn close(
                     act,
                     sid,
                     retracted: false,
+                    label_shadowed: false,
                 });
             }
             Err(q) => quarantined.push((e.clone(), q)),
@@ -148,21 +152,37 @@ pub fn close(
 
     // 4: assemble the SPL theory text. Local trust first (unsourced policy
     // directives), then one claims block per active assert.
+    //
+    // Rule labels share one namespace across the whole theory (hence's
+    // cross-entry references rely on it), so two entries defining the same
+    // explicit label would make the assembled SPL unparseable — a
+    // member-triggerable denial of service. We keep the FIRST definition by
+    // corpus order (hlc, signer — `admitted` is already in that order) and
+    // drop later redefinitions from closure. They remain in the corpus and
+    // the journal (REQ-016); only their effect on this closure is suppressed.
     let mut spl = String::new();
     spl.push_str(local_trust_spl);
     spl.push('\n');
-    for a in admitted.iter().filter(|a| !a.retracted) {
-        if let SpeechAct::Assert {
-            sentence_id,
-            spl: payload,
-        } = &a.act
-        {
-            let source = source_atom(&a.entry.signer);
-            let at = rfc3339_from_ms(a.entry.hlc.wall_ms);
-            spl.push_str(&format!(
-                "(claims {source} :at \"{at}\" :id \"{sentence_id}\"\n  {payload})\n"
-            ));
+    let mut seen_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for a in admitted.iter_mut().filter(|a| !a.retracted) {
+        let (sentence_id, payload) = match &a.act {
+            SpeechAct::Assert {
+                sentence_id,
+                spl: payload,
+            } => (sentence_id.clone(), payload.clone()),
+            _ => continue,
+        };
+        if let Some(label) = explicit_rule_label(&payload) {
+            if !seen_labels.insert(label) {
+                a.label_shadowed = true;
+                continue;
+            }
         }
+        let source = source_atom(&a.entry.signer);
+        let at = rfc3339_from_ms(a.entry.hlc.wall_ms);
+        spl.push_str(&format!(
+            "(claims {source} :at \"{at}\" :id \"{sentence_id}\"\n  {payload})\n"
+        ));
     }
 
     // Synthetic strict rules for commitment triggers (ADR-007): the trigger
@@ -265,6 +285,34 @@ pub fn close(
         admitted,
         quarantined,
     })
+}
+
+/// The explicit rule label an SPL payload defines, if any. Labels are the
+/// token right after `always`/`normally`/`except`; `given`/`prefer`/`trusts`
+/// and friends define none. Returns None when the rule is unlabelled (the
+/// reasoner will auto-number it, and auto labels never collide across
+/// entries). Parsing here reuses the single SPL recogniser.
+fn explicit_rule_label(payload: &str) -> Option<String> {
+    // Fast path: only `always`/`normally`/`except` forms can carry an
+    // explicit rule label. Facts and everything else skip the parse — this
+    // keeps assembly close to a single parse of the whole theory (NFR-001).
+    let head = payload.trim_start().trim_start_matches('(').trim_start();
+    if !(head.starts_with("always") || head.starts_with("normally") || head.starts_with("except")) {
+        return None;
+    }
+    let theory = spindle_parser::parse_spl(payload).ok()?;
+    for rule in theory.rules() {
+        // spindle auto-numbers unlabelled rules (f1/s1/r1/d1…); an explicit
+        // label is one that appears verbatim as a token in the payload.
+        let label = &rule.label;
+        if payload
+            .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+            .any(|tok| tok == label)
+        {
+            return Some(label.clone());
+        }
+    }
+    None
 }
 
 /// Canonical `to_spl` rendering of a literal given as user text

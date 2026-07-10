@@ -325,3 +325,7 @@
 (claims agent:claude
   :at "2026-07-10T15:50:30Z"
   (given completed-join-p2p))
+
+(claims agent:claude
+  :at "2026-07-10T16:14:47Z"
+  (given completed-hardening))

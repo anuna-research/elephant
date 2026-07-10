@@ -64,7 +64,12 @@ proptest = "1"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+criterion = "0.5"
 which = "7"
+
+[[bench]]
+name = "closure"
+harness = false
 
 [profile.release]
 lto = true

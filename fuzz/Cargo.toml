@@ -1,0 +1,42 @@
+[package]
+name = "elephant-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+elephant = { path = ".." }
+
+[[bin]]
+name = "entry_json"
+path = "fuzz_targets/entry_json.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "spl_payload"
+path = "fuzz_targets/spl_payload.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "invite_code"
+path = "fuzz_targets/invite_code.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "sealed_entry"
+path = "fuzz_targets/sealed_entry.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cbcl_wire"
+path = "fuzz_targets/cbcl_wire.rs"
+test = false
+doc = false

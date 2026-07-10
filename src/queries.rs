@@ -362,7 +362,13 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
             "signer": a.entry.signer,
             "performative": a.act.performative(),
             "hlc": {"wall_ms": a.entry.hlc.wall_ms, "logical": a.entry.hlc.logical},
-            "status": if a.retracted { "retracted" } else { "active" },
+            "status": if a.retracted {
+                "retracted"
+            } else if a.label_shadowed {
+                "shadowed"
+            } else {
+                "active"
+            },
             "cbcl": a.entry.cbcl,
         }));
     }
