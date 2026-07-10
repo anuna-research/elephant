@@ -33,6 +33,10 @@ openmls_rust_crypto = "0.5"
 openmls_traits = "0.5"
 tls_codec = "0.4"
 base64 = "0.22"
+
+# P2P join (SPEC-002): SPAKE2 + DHT rendezvous
+spake2 = "0.4"
+hmac = "0.12"
 base64ct = { version = "1", features = ["alloc"] }
 
 # CLI & serialisation
@@ -46,7 +50,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Daemon (SPEC-002; hark pattern: loopback axum + discovery record + flock)
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "io-util"] }
 axum = "0.8"
 fs2 = "0.4"
 ureq = { version = "2", features = ["json"] }

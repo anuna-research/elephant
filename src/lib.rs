@@ -15,6 +15,7 @@ pub mod daemon;
 pub mod e2ee;
 pub mod errors;
 pub mod id;
+pub mod p2p;
 pub mod paths;
 pub mod queries;
 pub mod store;

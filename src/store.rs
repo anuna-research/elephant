@@ -163,6 +163,77 @@ impl TheoryStore {
         })
     }
 
+    /// Materialise a theory learned from a join ceremony (SPEC-002 REQ-104):
+    /// no genesis minting, no MLS group creation — the keybook and the MLS
+    /// group already exist from the Welcome. Called only after the ceremony
+    /// has authenticated the steward, so nothing partial is left on failure.
+    pub fn adopt(
+        paths: &Paths,
+        ident: &Identity,
+        theory_id: &str,
+        alias: &str,
+        keybook: crate::e2ee::keybook::Keybook,
+        steward_did: &str,
+        steward_did_doc: &[u8],
+    ) -> AppResult<TheoryStore> {
+        if let Some(existing) = resolve_alias(paths, alias)? {
+            if existing != theory_id {
+                return Err(AppError::Config(format!(
+                    "local alias '{alias}' already names a different theory"
+                )));
+            }
+        }
+        let dir = paths.theory_dir(theory_id);
+        std::fs::create_dir_all(dir.join("members"))?;
+        keybook.save(&crate::e2ee::keybook::keybook_path(paths, theory_id))?;
+
+        let meta = TheoryMeta {
+            theory_id: theory_id.to_string(),
+            alias: alias.to_string(),
+            created: chrono::Utc::now().to_rfc3339(),
+        };
+        std::fs::write(
+            paths.theory_meta(theory_id),
+            toml::to_string_pretty(&meta).map_err(|e| AppError::Internal(e.to_string()))?,
+        )?;
+
+        // Both members' DID documents, so every signature verifies offline.
+        let members = dir.join("members");
+        let tail = |did: &str| did.rsplit(':').next().unwrap_or(did).to_string();
+        std::fs::write(
+            members.join(format!("{}.json", tail(steward_did))),
+            steward_did_doc,
+        )?;
+        std::fs::write(
+            members.join(format!("{}.json", ident.did.method_specific_id())),
+            ident
+                .document
+                .to_bytes()
+                .map_err(|e| AppError::Internal(format!("did doc: {e}")))?,
+        )?;
+
+        let doc = LoroDoc::new();
+        doc.set_peer_id(node_id_for(ident))
+            .map_err(|e| AppError::Internal(format!("loro peer id: {e}")))?;
+        Ok(TheoryStore {
+            theory_id: theory_id.to_string(),
+            meta,
+            doc,
+            paths: paths.clone(),
+            keybook: Some(keybook),
+        })
+    }
+
+    /// The underlying Loro doc, for sync sessions (SPEC-002 CON-103).
+    pub fn doc(&self) -> &LoroDoc {
+        &self.doc
+    }
+
+    /// Persist after an external mutation of the doc (e.g. a sync import).
+    pub fn flush_public(&self) -> AppResult<()> {
+        self.flush()
+    }
+
     /// Set the local peer id before local writes (unique per identity).
     pub fn bind_identity(&self, ident: &Identity) -> AppResult<()> {
         self.doc

@@ -308,3 +308,16 @@
 (claims agent:claude
   :at "2026-07-10T15:20:46Z"
   (given completed-e2ee))
+
+(claims agent:claude
+  :at "2026-07-10T15:21:22Z"
+  (given claim-v1-join-p2p)
+  (normally r-cl-state-v1-join-p2p claim-v1-join-p2p state-claimed-v1-join-p2p)
+  (normally r-cl-chain-v1-join-p2p state-claimed-v1-join-p2p claimed-join-p2p)
+)
+
+;; Propagation rules: failures in 'join-p2p' block downstream tasks
+(normally r-propagate-hardening-from-join-p2p-failed failed-join-p2p upstream-blocked-hardening)
+(normally r-propagate-hardening-from-join-p2p-permanently-failed permanently-failed-join-p2p upstream-blocked-hardening)
+(normally r-propagate-hardening-from-join-p2p-stale-v1 stale-v1-join-p2p upstream-blocked-hardening)
+(normally r-propagate-hardening-from-join-p2p-timeout-v1 timeout-v1-join-p2p upstream-blocked-hardening)
