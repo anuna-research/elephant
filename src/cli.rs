@@ -365,6 +365,17 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Log => crate::queries::log(&ctx),
         Command::Query(QueryCmd::Describe { labels }) => crate::queries::describe(&ctx, &labels),
         Command::Query(QueryCmd::Trace) => crate::queries::trace(&ctx),
+        Command::Plan(PlanCmd::Board { agent }) => crate::tasks::board(&ctx, agent.as_deref()),
+        Command::Plan(PlanCmd::Info) => crate::tasks::plan_info(&ctx),
+        Command::Plan(PlanCmd::JoinAs { agent_name }) => {
+            crate::tasks::join_as(&ctx, agent_name.as_deref())
+        }
+        Command::Task(TaskCmd::Next { agent }) => crate::tasks::next(&ctx, agent.as_deref()),
+        Command::Task(TaskCmd::Claim { task, force }) => crate::tasks::claim(&ctx, &task, force),
+        Command::Task(TaskCmd::Unclaim { task }) => crate::tasks::unclaim(&ctx, &task),
+        Command::Task(TaskCmd::Complete { task }) => crate::tasks::complete(&ctx, &task),
+        Command::Task(TaskCmd::Block { task, reason }) => crate::tasks::block(&ctx, &task, &reason),
+        Command::Task(TaskCmd::Unblock { task }) => crate::tasks::unblock(&ctx, &task),
         _ => Err(AppError::Internal("not yet implemented".into())),
     }
 }
@@ -433,6 +444,33 @@ fn append_act(ctx: &Ctx, p: &Producer, act: SpeechAct, spl_form: &str) -> AppRes
         println!("{}  {}", act.performative(), receipt);
     }
     Ok(())
+}
+
+/// Append a batch of assert speech-acts as one bundle (SPEC-003 ADR-202):
+/// one Entry per statement, distinct HLCs, single Loro commit. Returns the
+/// number of entries appended.
+pub fn append_asserts(ctx: &Ctx, stmts: &[String]) -> AppResult<usize> {
+    let p = producer(ctx)?;
+    let mut entries = Vec::with_capacity(stmts.len());
+    let mut hlc = p.hlc;
+    for stmt in stmts {
+        let sid = Entry::sentence_id(&p.store.theory_id, p.ident.did.as_str(), hlc);
+        entries.push(Entry::create(
+            &p.store.theory_id,
+            hlc,
+            p.ident.did.as_str(),
+            &format!("{}#key-0", p.ident.did.as_str()),
+            &SpeechAct::Assert {
+                sentence_id: sid,
+                spl: stmt.clone(),
+            },
+            &p.ts,
+            &p.ident.signing_key,
+        ));
+        hlc.logical += 1;
+    }
+    p.store.append_batch(&entries)?;
+    Ok(entries.len())
 }
 
 /// REQ-005: bare literals sugar to `(given …)`.
@@ -615,14 +653,27 @@ pub fn now_pair() -> (u64, String) {
 fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
     match cmd {
         TheoryCmd::Create { name, template } => {
-            if template.is_some() {
-                return Err(AppError::Internal(
-                    "--template is not yet implemented (SPEC-003 REQ-209)".into(),
-                ));
-            }
+            let seed = match template.as_deref() {
+                None => Vec::new(),
+                Some("plan") => crate::tasks::plan_template(&name, &now_pair().1),
+                Some(other) => {
+                    return Err(AppError::Usage(format!(
+                        "unknown template '{other}' (available: plan)"
+                    )));
+                }
+            };
             let ident = crate::id::load(&ctx.paths)?;
             let (wall_ms, ts) = now_pair();
             let store = crate::store::TheoryStore::create(&ctx.paths, &ident, &name, wall_ms, &ts)?;
+            if !seed.is_empty() {
+                let seed_ctx = Ctx {
+                    paths: ctx.paths.clone(),
+                    json: false,
+                    theory: Some(store.theory_id.clone()),
+                    at: None,
+                };
+                append_asserts(&seed_ctx, &seed)?;
+            }
             if ctx.json {
                 println!(
                     "{}",

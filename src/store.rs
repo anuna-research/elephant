@@ -206,6 +206,19 @@ impl TheoryStore {
         }
     }
 
+    /// Append a batch of locally-signed entries in one commit (bundles,
+    /// SPEC-003 ADR-202).
+    pub fn append_batch(&self, entries: &[Entry]) -> AppResult<()> {
+        let list = self.doc.get_list(CORPUS_CONTAINER);
+        for entry in entries {
+            let json = crate::core::envelope::entry_to_json(entry);
+            list.push(json.as_str())
+                .map_err(|e| AppError::Internal(format!("loro push: {e}")))?;
+        }
+        self.doc.commit();
+        self.flush()
+    }
+
     /// Append a locally-signed entry and persist (REQ-020: no network).
     pub fn append(&self, entry: &Entry) -> AppResult<()> {
         let json = crate::core::envelope::entry_to_json(entry);

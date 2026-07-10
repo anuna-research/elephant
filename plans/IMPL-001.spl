@@ -274,3 +274,16 @@
 (claims agent:claude
   :at "2026-07-10T14:56:17Z"
   (given completed-commitments))
+
+(claims agent:claude
+  :at "2026-07-10T15:02:43Z"
+  (given claim-v1-daemon)
+  (normally r-cl-state-v1-daemon claim-v1-daemon state-claimed-v1-daemon)
+  (normally r-cl-chain-v1-daemon state-claimed-v1-daemon claimed-daemon)
+)
+
+;; Propagation rules: failures in 'daemon' block downstream tasks
+(normally r-propagate-join-p2p-from-daemon-failed failed-daemon upstream-blocked-join-p2p)
+(normally r-propagate-join-p2p-from-daemon-permanently-failed permanently-failed-daemon upstream-blocked-join-p2p)
+(normally r-propagate-join-p2p-from-daemon-stale-v1 stale-v1-daemon upstream-blocked-join-p2p)
+(normally r-propagate-join-p2p-from-daemon-timeout-v1 timeout-v1-daemon upstream-blocked-join-p2p)
