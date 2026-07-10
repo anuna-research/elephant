@@ -329,3 +329,10 @@
 (claims agent:claude
   :at "2026-07-10T16:14:47Z"
   (given completed-hardening))
+
+(claims agent:claude
+  :at "2026-07-10T16:18:19Z"
+  (given claim-v1-docs)
+  (normally r-cl-state-v1-docs claim-v1-docs state-claimed-v1-docs)
+  (normally r-cl-chain-v1-docs state-claimed-v1-docs claimed-docs)
+)

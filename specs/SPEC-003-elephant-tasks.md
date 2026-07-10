@@ -2,7 +2,7 @@
 id: SPEC-003
 title: elephant tasks — the hence-successor coordination layer
 version: 0.1.0
-status: approved
+status: implemented
 date: 2026-07-11
 last-updated: 2026-07-11
 audience: agent, human reviewer
@@ -285,6 +285,8 @@ plan.spl, run elephant against the imported theory, diff the JSON.
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.0 — implemented: hence-byte-compatible lifecycle bundles, board/next/plan, migration oracle diffs clean against live hence 0.7.
 
 - 0.1.0 — initial; authored after the stakeholder directive that
   elephant-3000 succeeds hence, from the hence 0.7 source survey and the

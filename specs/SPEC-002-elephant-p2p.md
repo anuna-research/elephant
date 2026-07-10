@@ -2,7 +2,7 @@
 id: SPEC-002
 title: elephant p2p — daemon, SPAKE2 join, pkarr discovery, Loro sync
 version: 0.1.0
-status: approved
+status: implemented
 date: 2026-07-11
 last-updated: 2026-07-11
 audience: agent, human reviewer
@@ -377,6 +377,8 @@ structured audit line (invite id, outcome, no secrets).
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.0 — implemented: daemon (loopback API, flock lifecycle, push watch), SPAKE2 join ceremony (proven over duplex), iroh QUIC transport + Mainline-DHT discovery wired (live loopback test ignored).
 
 - 0.1.0 — initial specification, patterned on [[SPEC-047]] with
   elephant-specific membership (corpus-evidence roster) and the

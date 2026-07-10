@@ -2,7 +2,7 @@
 id: SPEC-001
 title: elephant — speech-act coordination on a shared defeasible theory
 version: 0.1.0
-status: approved
+status: implemented
 date: 2026-07-11
 last-updated: 2026-07-11
 audience: agent, human reviewer
@@ -696,6 +696,8 @@ audited crates; no novel constructions (no-go area respected).
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.0 — implemented (identity, corpus, closure, commitments, queries). BUG-001 (duplicate-rule-label DoS) found by the convergence property test and fixed with deterministic label shadowing.
 
 - 0.1.0 — initial specification (Phase 1–2), derived from the goal
   directive, [[Elephant 2000]], the prior `../elephant` design corpus

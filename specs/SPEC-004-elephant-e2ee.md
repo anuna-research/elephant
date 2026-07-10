@@ -2,7 +2,7 @@
 id: SPEC-004
 title: elephant e2ee — MLS-based end-to-end encryption of theory corpora
 version: 0.1.0
-status: approved
+status: implemented
 date: 2026-07-11
 last-updated: 2026-07-11
 audience: agent, human reviewer
@@ -289,6 +289,8 @@ crypto review of the SPAKE2 ∘ MLS ∘ keybook composition.
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.0 — implemented: openmls 0.8 group per theory, sealed corpus, keybook, steward commits; removal-locks-out property tested end-to-end. Tier-1 crypto review of the SPAKE2∘MLS∘keybook composition remains open.
 
 - 0.1.0 — initial, added on stakeholder directive ("implement message
   layer security for E2EE"); supersedes SPEC-002 ADR-105's deferral.
