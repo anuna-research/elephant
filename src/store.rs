@@ -29,6 +29,9 @@ pub struct TheoryStore {
     pub meta: TheoryMeta,
     doc: LoroDoc,
     paths: Paths,
+    /// Corpus data keys (SPEC-004 REQ-303). Present for every theory this
+    /// agent is a member of; absent only for a corpus we cannot decrypt.
+    keybook: Option<crate::e2ee::keybook::Keybook>,
 }
 
 /// did-crdt's node-id binding: low 64 bits (LE) of blake3(pubkey).
@@ -83,11 +86,20 @@ impl TheoryStore {
         let dir = paths.theory_dir(&theory_id);
         std::fs::create_dir_all(dir.join("members"))?;
 
+        // SPEC-004 REQ-301/REQ-303: mint the MLS group (creator = steward)
+        // and the genesis keybook before anything is written.
+        let provider = crate::e2ee::open_provider(paths, &theory_id)?;
+        let mls_ident = crate::e2ee::MlsIdentity::for_theory(ident, &theory_id);
+        crate::e2ee::create_group(&provider, &mls_ident, &theory_id)?;
+        let (keybook, k0) = crate::e2ee::keybook::Keybook::genesis();
+        keybook.save(&crate::e2ee::keybook::keybook_path(paths, &theory_id))?;
+
+        let sealed = crate::e2ee::seal::seal(&genesis, &theory_id, 0, &k0)?;
         let doc = LoroDoc::new();
         doc.set_peer_id(node_id)
             .map_err(|e| AppError::Internal(format!("loro peer id: {e}")))?;
         doc.get_list(CORPUS_CONTAINER)
-            .push(genesis_json.as_str())
+            .push(crate::e2ee::seal::to_json(&sealed).as_str())
             .map_err(|e| AppError::Internal(format!("loro push: {e}")))?;
         doc.commit();
 
@@ -117,6 +129,7 @@ impl TheoryStore {
             meta,
             doc,
             paths: paths.clone(),
+            keybook: Some(keybook),
         };
         store.flush()?;
         Ok(store)
@@ -138,11 +151,15 @@ impl TheoryStore {
         let snapshot = std::fs::read(paths.theory_doc(&theory_id))?;
         doc.import(&snapshot)
             .map_err(|e| AppError::Config(format!("corpus corrupt: {e}")))?;
+        let keybook = crate::e2ee::keybook::Keybook::load(&crate::e2ee::keybook::keybook_path(
+            paths, &theory_id,
+        ))?;
         Ok(TheoryStore {
             theory_id,
             meta,
             doc,
             paths: paths.clone(),
+            keybook,
         })
     }
 
@@ -172,7 +189,16 @@ impl TheoryStore {
                 malformed.push((i, "non-string corpus element".to_string()));
                 continue;
             };
-            match crate::core::envelope::entry_from_json(s) {
+            // REQ-303: every element is a SealedEntry; opening is fail-closed.
+            let sealed = match crate::e2ee::seal::from_json(s) {
+                Ok(sealed) => sealed,
+                Err(err) => {
+                    malformed.push((i, err.to_string()));
+                    continue;
+                }
+            };
+            let keys = |g: u32| self.keybook.as_ref().and_then(|kb| kb.key(g));
+            match crate::e2ee::seal::open(&sealed, &self.theory_id, &keys) {
                 Ok(e) => entries.push(e),
                 Err(err) => malformed.push((i, err.to_string())),
             }
@@ -209,10 +235,19 @@ impl TheoryStore {
     /// Append a batch of locally-signed entries in one commit (bundles,
     /// SPEC-003 ADR-202).
     pub fn append_batch(&self, entries: &[Entry]) -> AppResult<()> {
+        let kb = self.keybook.as_ref().ok_or_else(|| {
+            AppError::Config(format!(
+                "no keybook for theory {} — cannot seal (are you a member?)",
+                self.theory_id
+            ))
+        })?;
+        let key = kb
+            .current_key()
+            .ok_or_else(|| AppError::Config("keybook has no current key".into()))?;
         let list = self.doc.get_list(CORPUS_CONTAINER);
         for entry in entries {
-            let json = crate::core::envelope::entry_to_json(entry);
-            list.push(json.as_str())
+            let sealed = crate::e2ee::seal::seal(entry, &self.theory_id, kb.current, &key)?;
+            list.push(crate::e2ee::seal::to_json(&sealed).as_str())
                 .map_err(|e| AppError::Internal(format!("loro push: {e}")))?;
         }
         self.doc.commit();
@@ -221,13 +256,12 @@ impl TheoryStore {
 
     /// Append a locally-signed entry and persist (REQ-020: no network).
     pub fn append(&self, entry: &Entry) -> AppResult<()> {
-        let json = crate::core::envelope::entry_to_json(entry);
-        self.doc
-            .get_list(CORPUS_CONTAINER)
-            .push(json.as_str())
-            .map_err(|e| AppError::Internal(format!("loro push: {e}")))?;
-        self.doc.commit();
-        self.flush()
+        self.append_batch(std::slice::from_ref(entry))
+    }
+
+    /// The theory's keybook, when this agent is a member (SPEC-004).
+    pub fn keybook(&self) -> Option<&crate::e2ee::keybook::Keybook> {
+        self.keybook.as_ref()
     }
 
     /// Known member DID documents → key resolver for merge validation.

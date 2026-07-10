@@ -22,6 +22,17 @@ loro = "1.13"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 blake3 = "1"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+
+# E2EE — MLS (SPEC-004 ADR-301; same stack as ../hark)
+openmls = "0.8"
+openmls_basic_credential = "0.5"
+openmls_rust_crypto = "0.5"
+openmls_traits = "0.5"
+tls_codec = "0.4"
+base64 = "0.22"
 base64ct = { version = "1", features = ["alloc"] }
 
 # CLI & serialisation

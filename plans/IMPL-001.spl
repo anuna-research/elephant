@@ -304,3 +304,7 @@
 (normally r-propagate-join-p2p-from-e2ee-permanently-failed permanently-failed-e2ee upstream-blocked-join-p2p)
 (normally r-propagate-join-p2p-from-e2ee-stale-v1 stale-v1-e2ee upstream-blocked-join-p2p)
 (normally r-propagate-join-p2p-from-e2ee-timeout-v1 timeout-v1-e2ee upstream-blocked-join-p2p)
+
+(claims agent:claude
+  :at "2026-07-10T15:20:46Z"
+  (given completed-e2ee))

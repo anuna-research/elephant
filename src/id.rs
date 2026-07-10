@@ -58,7 +58,6 @@ impl Identity {
 
     /// The seed bytes, for HKDF-derived subkeys (SPEC-004 CON-304).
     /// Never expose outside key-derivation call sites.
-    #[allow(dead_code)] // consumed by the e2ee/join tasks (SPEC-004 CON-304)
     pub(crate) fn seed(&self) -> [u8; 32] {
         self.signing_key.to_bytes()
     }

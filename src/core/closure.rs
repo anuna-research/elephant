@@ -400,9 +400,8 @@ mod tests {
             .expect("fact has a rule label");
         let meta = c.theory.get_meta(&label).expect("claims meta present");
         let src = meta.properties.get("source").expect("source recorded");
-        assert_eq!(
+        assert!(
             format!("{src:?}").contains(&source_atom(&did(1))),
-            true,
             "source must be the envelope signer, got {src:?}"
         );
     }

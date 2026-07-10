@@ -378,7 +378,6 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Task(TaskCmd::Unblock { task }) => crate::tasks::unblock(&ctx, &task),
         Command::Daemon(cmd) => handle_daemon(&ctx, cmd),
         Command::Watch { literal } => watch_cmd(&ctx, &literal),
-        _ => Err(AppError::Internal("not yet implemented".into())),
     }
 }
 
