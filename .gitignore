@@ -5,3 +5,8 @@
 /dist
 /dist-release
 *.profraw
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+/fuzz/Cargo.lock

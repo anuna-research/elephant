@@ -13,8 +13,8 @@ theory; no per-member workaround)
 **Priority:** P1
 **Status:** verified
 **Reported by:** the [[SPEC-001-elephant-core#TEST-021]] convergence property
-test (`tests/convergence_prop.rs`), which the [[anuna-dev]] Red-Gate
-discipline required before the fix.
+test (`tests/convergence_prop.rs`), which the USDD Red-Gate discipline
+required before the fix.
 
 ## Specification Reference
 
