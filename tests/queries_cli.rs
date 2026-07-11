@@ -218,16 +218,26 @@ fn theories_are_disjoint() {
     );
 }
 
-/// SPEC-003 REQ-208: query group spellings work identically.
+/// SPEC-003 REQ-208 (ADR-205): describe/trace are flat commands, and the
+/// v0.1 `query` group spelling is a usage error, not a silent alias.
 #[test]
-fn query_group_parity() {
+fn describe_and_trace_are_flat() {
     let e = Env::new();
     e.ok(&["assert", "qa-signed", "-t", "release"]);
-    let flat = e.json(&["why-not", "nope", "-t", "release"]);
-    let grouped = e.json(&["query", "why-not", "nope", "-t", "release"]);
-    assert_eq!(flat["blocked_by"], grouped["blocked_by"]);
-
-    // describe on a claims-derived label; trace dumps rows.
-    let tr = e.json(&["query", "trace", "-t", "release"]);
+    e.ok(&["assert", "(normally r-ok qa-signed ok)", "-t", "release"]);
+    let tr = e.json(&["trace", "-t", "release"]);
     assert!(!tr["trace"].as_array().unwrap().is_empty());
+
+    // TEST-208 positive: describe shows the rule for a known label…
+    let d = e.json(&["describe", "r-ok", "-t", "release"]);
+    let rule = d["labels"][0]["rule"].as_str().expect("rule spl present");
+    assert!(rule.contains("qa-signed"));
+    // …negative: unknown label is a clean miss, not an error.
+    let miss = e.json(&["describe", "no-such-label", "-t", "release"]);
+    assert!(miss["labels"][0]["rule"].is_null());
+
+    e.cmd()
+        .args(["query", "why-not", "nope", "-t", "release"])
+        .assert()
+        .failure();
 }

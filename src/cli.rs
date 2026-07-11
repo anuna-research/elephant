@@ -1,8 +1,8 @@
-//! CLI surface (SPEC-001 REQ-001..024, SPEC-002 REQ-101.., SPEC-003 ADR-203).
+//! CLI surface (SPEC-001 REQ-001..024, SPEC-002 REQ-101.., SPEC-003 ADR-205).
 //!
-//! Canonical groups mirror hence (`plan`, `task`, `query`); the flat
-//! spellings (`elephant status`, `elephant why-not …`) are aliases of the
-//! same implementations (SPEC-003 ADR-203).
+//! Every verb has exactly one flat spelling; noun groups survive only for
+//! lifecycle administration (`id`, `theory`, `daemon`) where the noun
+//! disambiguates the object (SPEC-003 ADR-205, superseding ADR-203).
 
 use crate::errors::{AppError, AppResult, Exit};
 use clap::{Args, Parser, Subcommand};
@@ -55,20 +55,11 @@ pub enum Command {
     /// Theories: create, list, invite, join, members
     #[command(subcommand)]
     Theory(TheoryCmd),
-    /// Plan views (hence-compatible): board, status, info
-    #[command(subcommand)]
-    Plan(PlanCmd),
-    /// Task lifecycle (hence-compatible): next, claim, complete, …
-    #[command(subcommand)]
-    Task(TaskCmd),
-    /// Queries (hence-compatible): explain, why-not, require, what-if, …
-    #[command(subcommand)]
-    Query(QueryCmd),
     /// Sync daemon lifecycle
     #[command(subcommand)]
     Daemon(DaemonCmd),
 
-    // ── flat producers (SPEC-001 REQ-005..009) ──
+    // ── producers (SPEC-001 REQ-005..009) ──
     /// Assert an SPL statement (or bare literal) into a theory
     Assert(AssertArgs),
     /// Retract your own earlier statement by sentence-id (E1)
@@ -104,19 +95,19 @@ pub enum Command {
         in_reply_to: String,
     },
 
-    // ── flat consumers (aliases of plan/query group) ──
-    /// All conclusions with proof tags (alias: plan status)
+    // ── reads (SPEC-001 REQ-010..017, SPEC-003 REQ-208) ──
+    /// All conclusions with proof tags
     Status {
         /// Show trust-weighted degrees and thresholds
         #[arg(long)]
         trust: bool,
     },
-    /// Derivation of a provable literal (alias: query explain)
+    /// Derivation of a provable literal
     Explain { literal: String },
-    /// Why a literal is not provable (alias: query why-not)
+    /// Why a literal is not provable
     #[command(name = "why-not")]
     WhyNot { literal: String },
-    /// Minimal fact set that would prove the literal (alias: query require)
+    /// Minimal fact set that would prove the literal
     ///
     /// Abduction: searches (bounded) for the smallest sets of facts that,
     /// if asserted, would make the literal provable. Nothing is written —
@@ -124,7 +115,7 @@ pub enum Command {
     ///
     /// Example: elephant -t release require release-ready
     Require { literal: String },
-    /// Hypothetical evaluation without asserting (alias: query what-if)
+    /// Hypothetical evaluation without asserting
     ///
     /// Evaluates the goal as if the given facts were asserted, without
     /// writing anything to the theory, and reports which conclusions would
@@ -150,6 +141,44 @@ pub enum Command {
     ///
     /// Example: elephant -t release watch release-ready
     Watch { literal: String },
+    /// Definitions + provenance for rule labels (SPEC-003 REQ-208)
+    Describe {
+        #[arg(required = true)]
+        labels: Vec<String>,
+    },
+    /// Full conclusion dump with firing order (SPEC-003 REQ-208)
+    Trace,
+
+    // ── plan coordination (SPEC-003 REQ-201..210) ──
+    /// Kanban board by task state (hence-compatible JSON)
+    Board {
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Render the (meta plan …) block
+    Info,
+    /// Assert this agent as available for assignment rules
+    #[command(name = "join-as")]
+    JoinAs { agent_name: Option<String> },
+    /// Ready, unclaimed assignments for an agent
+    Next {
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Claim a ready task (hence chain bundle)
+    Claim {
+        task: String,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Withdraw a claim
+    Unclaim { task: String },
+    /// Assert completion
+    Complete { task: String },
+    /// Block a task with a reason
+    Block { task: String, reason: String },
+    /// Remove a block
+    Unblock { task: String },
 }
 
 #[derive(Subcommand)]
@@ -197,76 +226,6 @@ pub enum TheoryCmd {
         #[arg(long)]
         force: bool,
     },
-}
-
-#[derive(Subcommand)]
-pub enum PlanCmd {
-    /// Kanban board by task state (hence-compatible JSON)
-    Board {
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// All conclusions with proof tags
-    Status {
-        #[arg(long)]
-        trust: bool,
-    },
-    /// Render the (meta plan …) block
-    Info,
-    /// Assert this agent as available for assignment rules
-    #[command(name = "join-as")]
-    JoinAs { agent_name: Option<String> },
-}
-
-#[derive(Subcommand)]
-pub enum TaskCmd {
-    /// Ready, unclaimed assignments for an agent
-    Next {
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// Claim a ready task (hence chain bundle)
-    Claim {
-        task: String,
-        #[arg(long)]
-        force: bool,
-    },
-    /// Withdraw a claim
-    Unclaim { task: String },
-    /// Assert completion
-    Complete { task: String },
-    /// Block a task with a reason
-    Block { task: String, reason: String },
-    /// Remove a block
-    Unblock { task: String },
-    /// Assert arbitrary SPL (same as flat `elephant assert`)
-    Assert(AssertArgs),
-}
-
-#[derive(Subcommand)]
-pub enum QueryCmd {
-    Explain {
-        literal: String,
-    },
-    #[command(name = "why-not")]
-    WhyNot {
-        literal: String,
-    },
-    Require {
-        literal: String,
-    },
-    #[command(name = "what-if")]
-    WhatIf {
-        #[arg(required = true, num_args = 2..)]
-        facts_then_goal: Vec<String>,
-    },
-    /// Definitions + provenance for rule labels
-    Describe {
-        #[arg(required = true)]
-        labels: Vec<String>,
-    },
-    /// Full conclusion dump
-    Trace,
 }
 
 #[derive(Subcommand)]
@@ -329,8 +288,10 @@ pub fn run() -> ExitCode {
 }
 
 fn init_tracing(verbose: u8) {
+    // noq_udp WARNs on every unreachable candidate path — routine on
+    // IPv4-only networks (iroh probes relays over IPv6 too); -v restores it.
     let default = match verbose {
-        0 => "warn",
+        0 => "warn,noq_udp=error",
         1 => "info",
         2 => "debug",
         _ => "trace",
@@ -363,7 +324,6 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Id(cmd) => handle_id(&ctx, cmd),
         Command::Theory(cmd) => handle_theory(&ctx, cmd),
         Command::Assert(args) => produce_assert(&ctx, &args.spl),
-        Command::Task(TaskCmd::Assert(args)) => produce_assert(&ctx, &args.spl),
         Command::Retract {
             sentence_id,
             reason,
@@ -380,37 +340,24 @@ fn dispatch(cli: Cli) -> AppResult<()> {
             literal,
             in_reply_to,
         } => produce_concede(&ctx, &literal, &in_reply_to),
-        Command::Status { trust } | Command::Plan(PlanCmd::Status { trust }) => {
-            crate::queries::status(&ctx, trust)
-        }
-        Command::Explain { literal } | Command::Query(QueryCmd::Explain { literal }) => {
-            crate::queries::explain(&ctx, &literal)
-        }
-        Command::WhyNot { literal } | Command::Query(QueryCmd::WhyNot { literal }) => {
-            crate::queries::why_not(&ctx, &literal)
-        }
-        Command::Require { literal } | Command::Query(QueryCmd::Require { literal }) => {
-            crate::queries::require(&ctx, &literal)
-        }
-        Command::WhatIf { facts_then_goal }
-        | Command::Query(QueryCmd::WhatIf { facts_then_goal }) => {
-            crate::queries::what_if(&ctx, &facts_then_goal)
-        }
+        Command::Status { trust } => crate::queries::status(&ctx, trust),
+        Command::Explain { literal } => crate::queries::explain(&ctx, &literal),
+        Command::WhyNot { literal } => crate::queries::why_not(&ctx, &literal),
+        Command::Require { literal } => crate::queries::require(&ctx, &literal),
+        Command::WhatIf { facts_then_goal } => crate::queries::what_if(&ctx, &facts_then_goal),
         Command::Commitments => crate::queries::commitments(&ctx),
         Command::Log => crate::queries::log(&ctx),
-        Command::Query(QueryCmd::Describe { labels }) => crate::queries::describe(&ctx, &labels),
-        Command::Query(QueryCmd::Trace) => crate::queries::trace(&ctx),
-        Command::Plan(PlanCmd::Board { agent }) => crate::tasks::board(&ctx, agent.as_deref()),
-        Command::Plan(PlanCmd::Info) => crate::tasks::plan_info(&ctx),
-        Command::Plan(PlanCmd::JoinAs { agent_name }) => {
-            crate::tasks::join_as(&ctx, agent_name.as_deref())
-        }
-        Command::Task(TaskCmd::Next { agent }) => crate::tasks::next(&ctx, agent.as_deref()),
-        Command::Task(TaskCmd::Claim { task, force }) => crate::tasks::claim(&ctx, &task, force),
-        Command::Task(TaskCmd::Unclaim { task }) => crate::tasks::unclaim(&ctx, &task),
-        Command::Task(TaskCmd::Complete { task }) => crate::tasks::complete(&ctx, &task),
-        Command::Task(TaskCmd::Block { task, reason }) => crate::tasks::block(&ctx, &task, &reason),
-        Command::Task(TaskCmd::Unblock { task }) => crate::tasks::unblock(&ctx, &task),
+        Command::Describe { labels } => crate::queries::describe(&ctx, &labels),
+        Command::Trace => crate::queries::trace(&ctx),
+        Command::Board { agent } => crate::tasks::board(&ctx, agent.as_deref()),
+        Command::Info => crate::tasks::plan_info(&ctx),
+        Command::JoinAs { agent_name } => crate::tasks::join_as(&ctx, agent_name.as_deref()),
+        Command::Next { agent } => crate::tasks::next(&ctx, agent.as_deref()),
+        Command::Claim { task, force } => crate::tasks::claim(&ctx, &task, force),
+        Command::Unclaim { task } => crate::tasks::unclaim(&ctx, &task),
+        Command::Complete { task } => crate::tasks::complete(&ctx, &task),
+        Command::Block { task, reason } => crate::tasks::block(&ctx, &task, &reason),
+        Command::Unblock { task } => crate::tasks::unblock(&ctx, &task),
         Command::Daemon(cmd) => handle_daemon(&ctx, cmd),
         Command::Watch { literal } => watch_cmd(&ctx, &literal),
     }

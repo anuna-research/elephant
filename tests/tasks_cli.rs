@@ -32,7 +32,7 @@ impl Env {
         for stmt in PLAN {
             e.ok(&["assert", stmt, "-t", "plan"]);
         }
-        e.ok(&["plan", "join-as", "alice", "-t", "plan"]);
+        e.ok(&["join-as", "alice", "-t", "plan"]);
         e
     }
 
@@ -75,12 +75,12 @@ impl Env {
 #[test]
 fn board_and_next() {
     let e = Env::new();
-    let b = e.json(&["plan", "board", "-t", "plan"]);
+    let b = e.json(&["board", "-t", "plan"]);
     assert_eq!(e.bucket(&b, "ready"), vec!["docs", "models"]);
     assert_eq!(e.bucket(&b, "backlog"), vec!["api"]);
     assert!(e.bucket(&b, "done").is_empty());
 
-    let n = e.json(&["task", "next", "--agent", "alice", "-t", "plan"]);
+    let n = e.json(&["next", "--agent", "alice", "-t", "plan"]);
     let actions: Vec<_> = n["next_actions"]
         .as_array()
         .unwrap()
@@ -95,23 +95,23 @@ fn board_and_next() {
 #[test]
 fn lifecycle_claim_unclaim_complete() {
     let e = Env::new();
-    e.ok(&["task", "claim", "models", "-t", "plan"]);
-    let b = e.json(&["plan", "board", "-t", "plan"]);
+    e.ok(&["claim", "models", "-t", "plan"]);
+    let b = e.json(&["board", "-t", "plan"]);
     assert_eq!(e.bucket(&b, "in_progress"), vec!["models"]);
 
     // idempotent claim
-    let again = e.json(&["task", "claim", "models", "-t", "plan"]);
+    let again = e.json(&["claim", "models", "-t", "plan"]);
     assert_eq!(again["noop"], true);
 
     // unclaim → back to ready (chain cancellation over v1)
-    e.ok(&["task", "unclaim", "models", "-t", "plan"]);
-    let b = e.json(&["plan", "board", "-t", "plan"]);
+    e.ok(&["unclaim", "models", "-t", "plan"]);
+    let b = e.json(&["board", "-t", "plan"]);
     assert_eq!(e.bucket(&b, "ready"), vec!["docs", "models"]);
 
     // re-claim (v2 over prior unclaim), complete
-    e.ok(&["task", "claim", "models", "-t", "plan"]);
-    e.ok(&["task", "complete", "models", "-t", "plan"]);
-    let b = e.json(&["plan", "board", "-t", "plan"]);
+    e.ok(&["claim", "models", "-t", "plan"]);
+    e.ok(&["complete", "models", "-t", "plan"]);
+    let b = e.json(&["board", "-t", "plan"]);
     assert_eq!(e.bucket(&b, "done"), vec!["models"]);
     // api's readiness rule depends on completed-models → now ready
     assert!(e.bucket(&b, "ready").contains(&"api".to_string()));
@@ -119,7 +119,7 @@ fn lifecycle_claim_unclaim_complete() {
     // claim of unready task refused (docs is ready; api ready now; use a
     // fresh backlog check: unclaim on completed refused)
     e.cmd()
-        .args(["task", "unclaim", "models", "-t", "plan"])
+        .args(["unclaim", "models", "-t", "plan"])
         .assert()
         .failure()
         .code(1);
@@ -130,17 +130,17 @@ fn lifecycle_claim_unclaim_complete() {
 fn claim_unready_refused() {
     let e = Env::new();
     e.cmd()
-        .args(["task", "claim", "api", "-t", "plan"])
+        .args(["claim", "api", "-t", "plan"])
         .assert()
         .failure()
         .code(1);
     // --force overrides
-    e.ok(&["task", "claim", "api", "--force", "-t", "plan"]);
+    e.ok(&["claim", "api", "--force", "-t", "plan"]);
 
     // unknown task → 8 with the available list
     let out = e
         .cmd()
-        .args(["task", "claim", "nope", "-t", "plan"])
+        .args(["claim", "nope", "-t", "plan"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(8));
@@ -152,15 +152,8 @@ fn claim_unready_refused() {
 #[test]
 fn block_unblock_with_reason_and_propagation() {
     let e = Env::new();
-    e.ok(&[
-        "task",
-        "block",
-        "models",
-        "waiting on schema sign-off",
-        "-t",
-        "plan",
-    ]);
-    let b = e.json(&["plan", "board", "-t", "plan"]);
+    e.ok(&["block", "models", "waiting on schema sign-off", "-t", "plan"]);
+    let b = e.json(&["board", "-t", "plan"]);
     // hence semantics: a manual block does NOT upstream-block dependents
     // (only failure states propagate); api stays backlog via its unmet
     // readiness rule.
@@ -170,7 +163,7 @@ fn block_unblock_with_reason_and_propagation() {
     // But a failure state does propagate: assert failed-models and see api
     // upstream-blocked (the propagation rules were appended by block/claim).
     e.ok(&["assert", "failed-models", "-t", "plan"]);
-    let b2 = e.json(&["plan", "board", "-t", "plan"]);
+    let b2 = e.json(&["board", "-t", "plan"]);
     let api_item = b2["blocked"]
         .as_array()
         .unwrap()
@@ -201,15 +194,15 @@ fn block_unblock_with_reason_and_propagation() {
         "blocked-by reason fact must be derivable: {s}"
     );
 
-    e.ok(&["task", "unblock", "models", "-t", "plan"]);
-    let b = e.json(&["plan", "board", "-t", "plan"]);
+    e.ok(&["unblock", "models", "-t", "plan"]);
+    let b = e.json(&["board", "-t", "plan"]);
     assert!(e.bucket(&b, "ready").contains(&"models".to_string()));
 
     // block of completed task refused
-    e.ok(&["task", "claim", "models", "-t", "plan"]);
-    e.ok(&["task", "complete", "models", "-t", "plan"]);
+    e.ok(&["claim", "models", "-t", "plan"]);
+    e.ok(&["complete", "models", "-t", "plan"]);
     e.cmd()
-        .args(["task", "block", "models", "r", "-t", "plan"])
+        .args(["block", "models", "r", "-t", "plan"])
         .assert()
         .failure()
         .code(1);
@@ -219,7 +212,7 @@ fn block_unblock_with_reason_and_propagation() {
 #[test]
 fn plan_info_and_join_as() {
     let e = Env::new();
-    let info = e.json(&["plan", "info", "-t", "plan"]);
+    let info = e.json(&["info", "-t", "plan"]);
     assert!(
         !info["plan"].is_null(),
         "template must seed meta plan: {info}"
@@ -228,7 +221,7 @@ fn plan_info_and_join_as() {
     assert!(rendered.contains("plan"), "title present: {rendered}");
 
     // bob isn't available yet → docs unassigned in next
-    let n = e.json(&["task", "next", "--agent", "bob", "-t", "plan"]);
+    let n = e.json(&["next", "--agent", "bob", "-t", "plan"]);
     assert!(
         n["fallback"] == true
             || n["next_actions"].as_array().unwrap().is_empty()
@@ -239,8 +232,8 @@ fn plan_info_and_join_as() {
                 .any(|a| a["agent"] == "bob"),
         "bob has no assignment before join-as: {n}"
     );
-    e.ok(&["plan", "join-as", "bob", "-t", "plan"]);
-    let n = e.json(&["task", "next", "--agent", "bob", "-t", "plan"]);
+    e.ok(&["join-as", "bob", "-t", "plan"]);
+    let n = e.json(&["next", "--agent", "bob", "-t", "plan"]);
     assert!(
         n["next_actions"]
             .as_array()
@@ -287,7 +280,7 @@ fn migration_oracle_vs_hence() {
         "hence claim failed: {}",
         String::from_utf8_lossy(&hence_out.stderr)
     );
-    e.ok(&["task", "claim", "models", "-t", "plan"]);
+    e.ok(&["claim", "models", "-t", "plan"]);
 
     let hence_board: serde_json::Value = serde_json::from_slice(
         &std::process::Command::new(&hence)
@@ -297,7 +290,7 @@ fn migration_oracle_vs_hence() {
             .stdout,
     )
     .unwrap();
-    let ele_board = e.json(&["plan", "board", "-t", "plan"]);
+    let ele_board = e.json(&["board", "-t", "plan"]);
 
     for bucket in ["backlog", "ready", "in_progress", "done"] {
         let mut h: Vec<String> = hence_board[bucket]
@@ -316,4 +309,21 @@ fn migration_oracle_vs_hence() {
         m.sort();
         assert_eq!(h, m, "bucket '{bucket}' diverges from hence");
     }
+}
+
+/// ADR-205: the v0.1 `task` and `plan` group spellings are usage errors,
+/// not silent aliases — hence muscle memory fails loud.
+#[test]
+fn group_spellings_removed() {
+    let e = Env::new();
+    e.cmd()
+        .args(["task", "claim", "models", "-t", "plan"])
+        .assert()
+        .failure()
+        .code(1);
+    e.cmd()
+        .args(["plan", "board", "-t", "plan"])
+        .assert()
+        .failure()
+        .code(1);
 }

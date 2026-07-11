@@ -23,8 +23,8 @@ stands is *derived* by defeasible reasoning over signed evidence — never
 decreed by a status column.
 
 It is the successor to [hence](https://codeberg.org/anuna/hence): the same
-task-coordination surface (`plan board`, `task claim/complete/block`,
-`query why-not/require/what-if`), but the plan is no longer a local file —
+task-coordination surface (`board`, `claim/complete/block`,
+`why-not/require/what-if`), but the plan is no longer a local file —
 it is a peer-to-peer, encrypted theory that travels.
 
 The concept comes from three observations:
@@ -95,11 +95,11 @@ no partial state.
 
 ```bash
 elephant theory create sprint --template plan
-elephant plan join-as alice -t sprint
-elephant task next --agent alice -t sprint
-elephant task claim models -t sprint
-elephant task complete models -t sprint      # unblocks dependents
-elephant plan board -t sprint
+elephant join-as alice -t sprint
+elephant next --agent alice -t sprint
+elephant claim models -t sprint
+elephant complete models -t sprint           # unblocks dependents
+elephant board -t sprint
 ```
 
 The lifecycle SPL is byte-compatible with hence 0.7's chain-cancellation
@@ -108,11 +108,19 @@ bundles, so existing hence plans and agent scripts port directly.
 ### The daemon
 
 ```bash
-elephant daemon start                        # holds replicas, syncs continuously
+export ELEPHANT_SYNC_INTERVAL=30             # opt in to continuous P2P sync (seconds)
+elephant daemon start                        # single writer + change watch + sync
 elephant status -t release                   # reflects peers' assertions
 elephant watch release-ready -t release      # pushed on tag change
 elephant daemon stop
 ```
+
+The daemon is the local single writer and change-notification plane. With
+`ELEPHANT_SYNC_INTERVAL` set, it also runs continuous P2P sync: it serves
+incoming sync sessions (roster-gated) and dials each theory's roster peers on
+that interval, so members reconverge without an operator. The sync wire is the
+`cbcl-elephant-sync` dialect (typed `offer`/`deliver` speech acts over iroh
+QUIC). Unset or `0` leaves sync off (see **Status** for why it is opt-in).
 
 One-shot commands route through the daemon when it is live (single writer)
 and fall back to direct store access when it is not. One identity
@@ -183,20 +191,31 @@ Anuna sibling repos are consumed as path dependencies (`../cbcl-rs`,
 ## Status
 
 **v0.1.** The core (identity, corpus, closure, commitments, queries), the
-hence-successor task layer, the daemon, MLS end-to-end encryption, and the
-SPAKE2 join ceremony are implemented and tested (83 tests; the join
+hence-successor task layer, the daemon's loopback control plane, MLS
+end-to-end encryption (including member removal with corpus-key rotation),
+and the SPAKE2 join ceremony are implemented and tested (the join
 choreography and the E2EE removal property are covered end-to-end). The
-live iroh-QUIC transport is wired but its loopback test is `#[ignore]`d
-(needs endpoint discovery to settle); the ceremony itself is proven over an
-in-memory duplex.
+iroh-QUIC transport primitives are wired — durable/rendezvous endpoints, DHT
+discovery, and a framed sync session — and the sync session converges two
+replicas in tests over an in-memory duplex; the live loopback dial is
+`#[ignore]`d (needs endpoint discovery to settle).
 
-**Not yet:** membership revocation (the roster is grow-only), corpus
-encryption is symmetric-at-rest per member (no storage-level adversary
-model), and the SPAKE2∘MLS∘keybook composition carries an inherited Tier-1
-crypto-review open item from [SPEC-047](specs/SPEC-004-elephant-e2ee.md).
-LLM-orchestration features from hence (`agent spawn/watch`, `plan
-translate/decompose`) are deliberately deferred. See each spec's
-Orientation → Open section.
+**Continuous P2P sync — implemented, opt-in.** With `ELEPHANT_SYNC_INTERVAL`
+set, the daemon runs a roster-gated accept loop (REQ-107) and a periodic
+roster-peer dialer, exchanging Loro deltas as `cbcl-elephant-sync` speech
+acts; two replicas reconverge to equal version vectors. The dialect,
+roster gate, sync session, and grow-only import are covered by unit and
+duplex tests. It is **opt-in** rather than on-by-default because the live
+iroh-QUIC dial cannot be exercised in CI (its loopback test is `#[ignore]`d
+pending endpoint discovery); the composed pieces are proven over an in-memory
+duplex.
+
+**Not yet:** corpus encryption is symmetric-at-rest per member (no
+storage-level adversary model), and the SPAKE2∘MLS∘keybook composition
+carries an inherited Tier-1 crypto-review open item from
+[SPEC-047](specs/SPEC-004-elephant-e2ee.md). LLM-orchestration features from
+hence (`agent spawn/watch`, `plan translate/decompose`) are deliberately
+deferred. See each spec's Orientation → Open section.
 
 ## References
 

@@ -21,7 +21,7 @@ Preconditions: theory contains readiness/assignment rules (hence-style).
 Steps:
 
 1. `elephant status -t release-v3 --json` → array of `{literal, tag, ...}`.
-2. `elephant query require release-ready -t release-v3 --json` → abduced
+2. `elephant require release-ready -t release-v3 --json` → abduced
    missing-fact set `["legal-signed"]`.
 3. Agent decides it can produce `legal-signed`, does the work, asserts it.
 

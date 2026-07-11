@@ -1,7 +1,7 @@
 ---
 id: SPEC-003
 title: elephant tasks — the hence-successor coordination layer
-version: 0.1.0
+version: 0.2.0
 status: implemented
 date: 2026-07-11
 last-updated: 2026-07-11
@@ -37,7 +37,7 @@ Structure:
 
 Decisions: [[#ADR-201]] preserve hence lifecycle SPL verbatim ·
 [[#ADR-202]] bundles = batched Entries, inert-if-partial ·
-[[#ADR-203]] hence-compatible command groups, flat aliases kept ·
+[[#ADR-205]] one flat verb surface (supersedes [[#ADR-203]] alias groups) ·
 [[#ADR-204]] LLM-orchestration features deferred.
 
 Load-bearing: [[#REQ-201]] claim chain · [[#REQ-203]] complete ·
@@ -88,7 +88,7 @@ the reasoner.
 
 #### REQ-201: Claim
 
-`elephant task claim <task> -t <theory> [--force]` SHALL verify the task
+`elephant claim <task> -t <theory> [--force]` SHALL verify the task
 exists and `ready-<task>` is defeasibly provable (unless `--force`),
 then append the hence claim bundle — for next free version N and prior
 unclaim version M when present:
@@ -113,7 +113,7 @@ Trace: [[#TEST-201]] · [[#ADR-201]] · [[#ADR-202]]
 
 #### REQ-202: Unclaim
 
-`elephant task unclaim <task> -t <theory>` SHALL refuse when
+`elephant unclaim <task> -t <theory>` SHALL refuse when
 `completed-<task>` holds, be idempotent when not claimed, and otherwise
 append the counter bundle for next version N against prior claim
 version P:
@@ -131,7 +131,7 @@ Trace: [[#TEST-202]]
 
 #### REQ-203: Complete
 
-`elephant task complete <task> -t <theory>` SHALL verify the task exists
+`elephant complete <task> -t <theory>` SHALL verify the task exists
 (listing available tasks on miss), be idempotent when already complete,
 and append `(given completed-<task>)`. When completion makes every
 declared task Done, the CLI SHALL report plan completion.
@@ -140,7 +140,7 @@ Trace: [[#TEST-203]]
 
 #### REQ-204: Block / unblock
 
-`elephant task block <task> '<reason>' -t <theory>` SHALL append the
+`elephant block <task> '<reason>' -t <theory>` SHALL append the
 `bl-` chain bundle (mirror of [[#REQ-201]] with block/blocked vocabulary)
 AND, fixing hence 0.7's silent reason drop, a
 `(given (blocked-by <task> "<reason>"))` fact carrying the reason into
@@ -150,7 +150,7 @@ Trace: [[#TEST-204]]
 
 #### REQ-205: Board
 
-`elephant plan board -t <theory> [--agent A] [--json]` SHALL render
+`elephant board -t <theory> [--agent A] [--json]` SHALL render
 tasks bucketed exactly by hence's precedence (completed → blocked →
 upstream-blocked → decomposed → claimed/in-progress → ready → backlog)
 from the closure, with hence's JSON shape
@@ -161,7 +161,7 @@ Trace: [[#TEST-205]]
 
 #### REQ-206: Next
 
-`elephant task next -t <theory> [--agent A] [--json]` SHALL list
+`elephant next -t <theory> [--agent A] [--json]` SHALL list
 assignments for tasks that are ready ∧ ¬(completed ∨ claimed ∨ blocked ∨
 upstream-blocked ∨ decomposed), filtered to the agent when given, with
 hence's fallback (no ready task → all assignments unfiltered) and a
@@ -169,21 +169,25 @@ ready-to-paste claim command per item.
 
 Trace: [[#TEST-206]]
 
-#### REQ-207: Task assert
+#### REQ-207: Task-annotated assert
 
-`elephant task assert '<spl>' -t <theory> [--task X]` SHALL behave as
+`elephant assert '<spl>' -t <theory> [--task X]` SHALL behave as
 [[SPEC-001-elephant-core#REQ-005]] (it is the same command surface hence
-agents already script against; `--task` is annotation only).
+agents already script against; `--task` is annotation only). The
+`task assert` group spelling from v0.1.0 is removed with the alias
+groups ([[#ADR-205]]) — it was byte-for-byte the same implementation.
 
 Trace: [[SPEC-001-elephant-core#TEST-005]]
 
-#### REQ-208: Query group parity
+#### REQ-208: Describe and trace
 
-`elephant query explain|why-not|require|what-if|describe|trace` SHALL be
-provided as the hence-compatible spelling of
-[[SPEC-001-elephant-core#REQ-011]]–[[SPEC-001-elephant-core#REQ-014]],
-adding `describe <label…>` (rule/fact definition + provenance + meta) and
-`trace` (full conclusion dump with firing order).
+`elephant describe <label…>` (rule/fact definition + provenance + meta)
+and `elephant trace` (full conclusion dump with firing order) SHALL be
+provided as flat commands alongside the
+[[SPEC-001-elephant-core#REQ-011]]–[[SPEC-001-elephant-core#REQ-014]]
+query verbs (`explain`, `why-not`, `require`, `what-if`), which they
+extend. The `query` group spelling from v0.1.0 is removed
+([[#ADR-205]]).
 
 Trace: [[#TEST-208]]
 
@@ -192,13 +196,13 @@ Trace: [[#TEST-208]]
 `elephant theory create <name> --template plan` SHALL seed the new
 theory with hence's default plan skeleton (`(meta plan …)` + example
 task/readiness/assignment structure) as genesis-adjacent Entries;
-`elephant plan info -t <theory>` SHALL render the `(meta plan …)` block.
+`elephant info -t <theory>` SHALL render the `(meta plan …)` block.
 
 Trace: [[#TEST-209]]
 
 #### REQ-210: Agent availability
 
-`elephant plan join-as <agent-name> -t <theory>` SHALL assert
+`elephant join-as <agent-name> -t <theory>` SHALL assert
 `(given agent-<name>-available)` so assignment rules can bind the local
 agent, using the signer's registered name by default.
 
@@ -208,7 +212,7 @@ Trace: [[#TEST-210]]
 
 #### NFR-201: A hence 0.7 plan body (the SPL forms of a plan.spl,
 claims wrappers dropped) SHALL be importable via repeated
-`task assert` with identical closure results for board/next/status on a
+`assert` with identical closure results for board/next/status on a
 10-task reference plan. // migration oracle, verified by TEST-211
 
 ## 3. Architecture decisions
@@ -240,7 +244,7 @@ nothing. No cross-Entry transaction machinery is introduced.
 // member replaying selective sub-bundles — mitigated by signatures and
 // audit, revisit with SPEC-002 revocation (trace: this ADR).
 
-#### ADR-203: Command surface
+#### ADR-203: Command surface — SUPERSEDED by [[#ADR-205]] (v0.2.0)
 
 Canonical groups mirror hence: `plan {board,status,info,validate,
 summary}`, `task {next,claim,unclaim,complete,block,unblock,assert}`,
@@ -251,6 +255,52 @@ spellings in [[SPEC-001-elephant-core]] (`elephant status`,
 over — hence remains available for file-local work; elephant's
 offline-first store ([[SPEC-001-elephant-core#REQ-020]]) covers the
 "no network" case with strictly more capability.
+
+The `-f plan.spl` exclusion and the file-mode reasoning stand; only the
+dual-spelling decision is reversed — see [[#ADR-205]].
+
+#### ADR-205: One flat verb surface (supersedes ADR-203's alias groups)
+
+**Decision.** The `plan`, `task`, and `query` command groups are
+removed. Every read and write verb has exactly one spelling, flat:
+producers `assert · retract · promise · request · concede`; reads
+`status · explain · why-not · require · what-if · commitments · log ·
+watch · describe · trace`; coordination `board · info · join-as · next
+· claim · unclaim · complete · block · unblock`. Noun groups survive
+only for lifecycle administration where the noun disambiguates the
+object: `id {create,whoami}`, `theory {create,list,invite,join,members,
+remove}`, `daemon {start,run,status,stop}`.
+
+**Context.** [[#ADR-203]] kept the hence group spellings for drop-in
+compatibility, making `plan status` and flat `status` "one
+implementation". In practice the compatibility surface that matters is
+frozen elsewhere: the SPL vocabulary ([[#ADR-201]]) and the JSON output
+shapes ([[#REQ-205]], [[SPEC-001-elephant-core]] CON-004) — not the
+argv spelling. No external consumer scripts the hence CLI spelling
+against elephant: this project supersedes the in-place hence-v2
+upgrade, so there is no installed base to migrate, and hence itself
+remains available for file-local work. Meanwhile the dual surface had a
+real, recurring cost: every aliased verb appeared twice in `--help`,
+docs and examples split between spellings, tab-completion doubled, and
+each alias pair was an extra `Command::X | Command::Group(...)` arm in
+dispatch. Two spellings for one action also violates the spirit of
+"one parser per language" ([[PROTO-001]] LangSec principle 5) applied
+to the human interface: redundant surface invites divergence.
+
+**Trade-offs.** (+) one canonical spelling per action — help,
+docs, completion, and agent-facing examples are unambiguous; dispatch
+shrinks (five alias arms and three subcommand enums deleted); the flat
+speech-act verbs (`elephant promise …`) read as the product's identity.
+(−) anyone with hence muscle memory types `elephant task claim x` and
+gets a usage error — mitigated by clap's suggestion machinery and by
+the error being immediate and loud rather than a silent divergence.
+(−) ~24 flat leaves in `--help` — kept scannable by declaration order
+grouping the help into admin/produce/read/coordinate runs.
+
+**Deferred.** The `theory` group still takes the theory as a
+positional argument (`elephant theory members <theory>`) while every
+flat verb uses global `-t`. Aligning that is a separate, smaller
+decision — deferred, owner HOC, tracked here.
 
 #### ADR-204: LLM-orchestration features deferred
 
@@ -273,7 +323,7 @@ keypairs), and they arrive as a follow-up spec once the core is proven.
 | TEST-204 | REQ-204 | block → Blocked + reason fact present | block completed → refused | reason dropped → fail |
 | TEST-205 | REQ-205 | 7-state fixture renders hence JSON shape | — | precedence order wrong → fail |
 | TEST-206 | REQ-206 | ready+assigned filtering; fallback when none ready | — | claimed task listed as next → fail |
-| TEST-208 | REQ-208 | describe shows rule+source; trace complete | unknown label → clean miss | — |
+| TEST-208 | REQ-208 | describe shows rule+source; trace complete | unknown label → clean miss; removed group spellings (`query`, `task`, `plan`) → usage error | — |
 | TEST-209 | REQ-209 | template seeds meta plan; info renders | — | — |
 | TEST-210 | REQ-210 | join-as → assignments bind | — | — |
 | TEST-211 | NFR-201 | port hence's own demo plan; board/next/status equal hence 0.7 output on same theory | — | any bucket diff → fail |
@@ -285,6 +335,11 @@ plan.spl, run elephant against the imported theory, diff the JSON.
 
 <details>
 <summary>Revision history</summary>
+
+- 0.2.0 — implemented: flatten the command surface: [[#ADR-205]] supersedes
+  [[#ADR-203]]'s alias groups; `plan`/`task`/`query` groups removed,
+  their verbs promoted to single flat spellings; REQ-201..210 and
+  NFR-201 restated with the flat spellings (semantics unchanged).
 
 - 0.1.0 — implemented: hence-byte-compatible lifecycle bundles, board/next/plan, migration oracle diffs clean against live hence 0.7.
 

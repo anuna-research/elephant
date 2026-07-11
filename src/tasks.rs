@@ -429,7 +429,7 @@ fn done(ctx: &Ctx, task: &str, action: &str, version: u32, entries: usize) -> Ap
     Ok(())
 }
 
-// ── board / next / plan info / join-as ─────────────────────────────────
+// ── board / next / info / join-as ──────────────────────────────────────
 
 pub fn board(ctx: &Ctx, agent: Option<&str>) -> AppResult<()> {
     let tv = task_view(ctx)?;
@@ -516,7 +516,7 @@ pub fn next(ctx: &Ctx, agent: Option<&str>) -> AppResult<()> {
             .map(|(t, a)| {
                 serde_json::json!({
                     "task": t, "agent": a, "literal": format!("assign-to-{t}-{a}"),
-                    "command": format!("elephant task claim {t} -t {}", tv.v.store.theory_id),
+                    "command": format!("elephant claim {t} -t {}", tv.v.store.theory_id),
                 })
             })
             .collect();
@@ -526,10 +526,10 @@ pub fn next(ctx: &Ctx, agent: Option<&str>) -> AppResult<()> {
                 "next_actions": items})
         );
     } else if actions.is_empty() {
-        println!("no assignments derivable — is anyone `plan join-as` available?");
+        println!("no assignments derivable — is anyone `join-as` available?");
     } else {
         for (i, (t, a)) in actions.iter().enumerate() {
-            println!("{}. {t} @{a} — elephant task claim {t}", i + 1);
+            println!("{}. {t} @{a} — elephant claim {t}", i + 1);
         }
     }
     Ok(())
