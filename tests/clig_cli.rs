@@ -138,3 +138,85 @@ fn non_obvious_commands_have_long_help() {
             .stdout(predicate::str::contains(needle));
     }
 }
+
+// ── theory aliases obey the declared grammar (SPEC-001 REQ-003) ─────────
+
+/// TEST-003 negative-input: a malformed alias is refused (exit 1) before
+/// anything is created — LDH labels only, 1..63, lowercase, RFC 6335
+/// hyphen placement, and never the 64-hex theory-id shape.
+#[test]
+fn theory_create_refuses_malformed_aliases() {
+    let env = Env::new();
+    env.cmd()
+        .args(["id", "create", "--name", "alice"])
+        .assert()
+        .success();
+    let too_long = "a".repeat(64); // also exactly the id shape
+    for bad in [
+        "Release-V1", // uppercase
+        "-staging",   // leading hyphen
+        "release-",   // trailing hyphen
+        "release--v1", // adjacent hyphens
+        "my theory",  // space
+        "plan.spl",   // dot
+        "../escape",  // path fragment
+        "",           // empty
+        too_long.as_str(),
+    ] {
+        env.cmd()
+            .args(["theory", "create", bad])
+            .assert()
+            .failure()
+            .code(1);
+    }
+    env.cmd()
+        .args(["theory", "list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"theories\":[]"));
+}
+
+/// An uppercase alias error suggests the lowercase spelling (reject, do
+/// not normalise — PROTO-001 LangSec principle 4).
+#[test]
+fn uppercase_alias_error_suggests_lowercase() {
+    let env = Env::new();
+    env.cmd()
+        .args(["id", "create", "--name", "alice"])
+        .assert()
+        .success();
+    env.cmd()
+        .args(["theory", "create", "Release-V1"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("release-v1"));
+}
+
+/// TEST-003 positive: the full LDH range is accepted — single char,
+/// digit-led, and 63 chars (one under the id length).
+#[test]
+fn theory_create_accepts_ldh_aliases() {
+    let env = Env::new();
+    env.cmd()
+        .args(["id", "create", "--name", "alice"])
+        .assert()
+        .success();
+    let max = format!("a{}", "b".repeat(62)); // 63 chars
+    for good in ["release-v1", "x", "9lives", max.as_str()] {
+        env.cmd().args(["theory", "create", good]).assert().success();
+    }
+}
+
+/// `-t` dispatch is decided by grammar: an argument that is neither a
+/// 64-hex id nor a valid alias is a usage error, not a lookup miss.
+#[test]
+fn theory_lookup_refuses_non_grammar_input() {
+    let env = Env::new();
+    env.setup_theory();
+    env.cmd()
+        .args(["status", "-t", "../release"])
+        .assert()
+        .failure()
+        .code(1);
+}

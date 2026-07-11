@@ -1,7 +1,7 @@
 ---
 id: SPEC-001
 title: elephant — speech-act coordination on a shared defeasible theory
-version: 0.1.0
+version: 0.1.2
 status: implemented
 date: 2026-07-11
 last-updated: 2026-07-11
@@ -133,6 +133,29 @@ mint a genesis Entry (a signed `assert` of the theory's `(meta …)`
 self-description including creator DID and creation time), derive the
 theory id as `blake3(genesis-entry-canonical-bytes)`, and initialise the
 theory's [[Loro]] document in the local store.
+
+The local alias — `<name>` here, and the joiner's `--alias` or the
+steward-proposed alias at adopt time
+([[SPEC-002-elephant-p2p#REQ-104]]; the latter is peer-controlled wire
+bytes) — SHALL match the [[LDH label]] grammar:
+
+```abnf
+alias   = let-dig / ( let-dig *61( let-dig / "-" ) let-dig )
+let-dig = %x61-7A / DIGIT   ; lowercase letters and digits only
+; 1–63 octets; adjacent hyphens ("--") additionally refused
+```
+
+This is [[RFC 1035]] §2.3.1's preferred name syntax as relaxed by
+[[RFC 1123]] §2.1 (digit may lead), with [[RFC 6335]] §5.1's hyphen
+placement rules. Lowercase-only rather than case-mapped comparison:
+per [[PROTO-001]] LangSec, malformed input is rejected, never
+normalised (an uppercase input is refused with the lowercase spelling
+suggested); [[RFC 8265]]'s PRECIS `UsernameCaseMapped` profile is the
+upgrade path if Unicode aliases are ever admitted. The 63-octet cap
+keeps the alias language DISJOINT from theory ids (exactly 64 lowercase
+hex), so `-t <arg>` dispatch is decided by grammar alone — RFC 1123
+§2.1's "check the syntax before lookup" rule — never by filesystem
+probing. Enforced at create, at adopt, and at open/dispatch.
 
 Trace: [[#TEST-003]] · [[#CON-002]]
 
@@ -647,7 +670,7 @@ negative-output per REQ) and adversarial pass before `implemented`.
 |---|---|---|---|---|
 | TEST-001 | REQ-001 | create → key 0600 + DID resolvable | second create w/o force refused | DID mismatch with pubkey rejected |
 | TEST-002 | REQ-002 | whoami fields | missing identity → exit 2 | — |
-| TEST-003 | REQ-003 | create → genesis entry verifies; id = blake3 | duplicate alias refused | tampered genesis → id mismatch detected |
+| TEST-003 | REQ-003 | create → genesis entry verifies; id = blake3; LDH aliases accepted (1..63, digit-led ok) | duplicate alias refused; malformed alias (uppercase, hyphen at an edge, `--`, dot/space/path fragment, >63, 64-hex shape) → exit 1, nothing created | tampered genesis → id mismatch detected |
 | TEST-004 | REQ-004 | list shows created+joined | — | counts wrong → fail |
 | TEST-005 | REQ-005 | assert `(given x)` → receipt, corpus+1 | malformed SPL → exit 3, corpus+0 | stored entry fails verify → fail |
 | TEST-006 | REQ-006 | own retract removes stmt from closure | retract of others' entry → inert (audit only) | corpus shrank → fail |
@@ -696,6 +719,12 @@ audited crates; no novel constructions (no-go area respected).
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.2 — theory aliases get a declared grammar ([[#REQ-003]]): LDH
+  labels, 1–63 octets, lowercase-only, RFC 1035/1123/6335-grounded;
+  disjoint from theory ids by length so `-t` dispatch is grammar-decided
+  (no filesystem probing on raw input); enforced at create, adopt
+  (steward-proposed alias is wire bytes), and open.
 
 - 0.1.1 — adversarial review round: fixed genesis-sentinel over-binding (spoofed-genesis entries now quarantined), widened source_atom to the full DID (no 64-bit trust-collision), and made closure fail closed per-entry when the assembled theory is unparseable (a toxic statement is quarantined, not fatal). Regression tests added.
 

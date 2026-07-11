@@ -62,6 +62,38 @@ pub fn is_valid_theory_id(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// A local theory alias is an LDH label (SPEC-001 REQ-003): 1–63 lowercase
+/// letters/digits/hyphens, letter-or-digit at both ends, no adjacent
+/// hyphens (RFC 1035 §2.3.1 / RFC 1123 §2.1 / RFC 6335 §5.1). The 63-octet
+/// cap keeps the alias language disjoint from theory ids (exactly 64 hex),
+/// so id-vs-alias dispatch is decided by grammar, never by probing the
+/// filesystem with raw input.
+pub fn is_valid_alias(s: &str) -> bool {
+    let b = s.as_bytes();
+    let let_dig = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    !b.is_empty()
+        && b.len() <= 63
+        && let_dig(b[0])
+        && let_dig(b[b.len() - 1])
+        && b.iter().all(|&c| let_dig(c) || c == b'-')
+        && !s.contains("--")
+}
+
+/// The usage error for a malformed alias; suggests the lowercase spelling
+/// when that alone would fix it (reject, never normalise — LangSec).
+fn alias_error(name: &str) -> AppError {
+    let lower = name.to_ascii_lowercase();
+    let hint = if is_valid_alias(&lower) {
+        format!(" — try '{lower}'")
+    } else {
+        String::new()
+    };
+    AppError::Usage(format!(
+        "invalid theory name '{name}': use 1-63 lowercase letters, digits \
+         and hyphens, no hyphen at either end and no '--'{hint}"
+    ))
+}
+
 impl TheoryStore {
     /// REQ-003: mint genesis, derive theory id, initialise the doc.
     pub fn create(
@@ -71,6 +103,10 @@ impl TheoryStore {
         wall_ms: u64,
         ts_rfc3339: &str,
     ) -> AppResult<TheoryStore> {
+        // Declared alias grammar (SPEC-001 REQ-003) before anything exists.
+        if !is_valid_alias(name) {
+            return Err(alias_error(name));
+        }
         // Refuse alias collision (HP-O6 failure mode).
         if resolve_alias(paths, name)?.is_some() {
             return Err(AppError::Config(format!(
@@ -158,14 +194,24 @@ impl TheoryStore {
         Ok(store)
     }
 
-    /// Open by id or alias.
+    /// Open by id or alias. The two languages are disjoint by construction
+    /// (64 hex vs ≤63 LDH), so the grammar decides which lookup runs —
+    /// RFC 1123 §2.1's "check the syntax before lookup" — and raw input is
+    /// never joined into a filesystem path.
     pub fn open(paths: &Paths, id_or_alias: &str) -> AppResult<TheoryStore> {
-        let theory_id = if paths.theory_dir(id_or_alias).is_dir() {
+        let theory_id = if is_valid_theory_id(id_or_alias) {
+            if !paths.theory_dir(id_or_alias).is_dir() {
+                return Err(AppError::NotFound(format!(
+                    "theory '{id_or_alias}' (no such theory id)"
+                )));
+            }
             id_or_alias.to_string()
-        } else {
+        } else if is_valid_alias(id_or_alias) {
             resolve_alias(paths, id_or_alias)?.ok_or_else(|| {
                 AppError::NotFound(format!("theory '{id_or_alias}' (no such id or alias)"))
             })?
+        } else {
+            return Err(alias_error(id_or_alias));
         };
         let meta: TheoryMeta =
             toml::from_str(&std::fs::read_to_string(paths.theory_meta(&theory_id))?)
@@ -214,6 +260,14 @@ impl TheoryStore {
                 "refusing to adopt malformed steward DID {steward_did:?}"
             ))
         })?;
+        // The alias is peer-controlled wire bytes when it comes from the
+        // steward's introduction (SPEC-001 REQ-003): same grammar as create.
+        if !is_valid_alias(alias) {
+            return Err(AppError::Usage(format!(
+                "steward proposed alias {alias:?}, which is not a valid \
+                 local alias — rerun join with --alias <name>"
+            )));
+        }
         if let Some(existing) = resolve_alias(paths, alias)? {
             if existing != theory_id {
                 return Err(AppError::Config(format!(
@@ -680,6 +734,34 @@ mod tests {
             !is_valid_theory_id(&"A".repeat(64)),
             "uppercase is not BLAKE3 output"
         );
+    }
+
+    /// SPEC-001 REQ-003: the alias grammar edges, and its disjointness from
+    /// the theory-id language (no string is in both).
+    #[test]
+    fn alias_grammar_shape() {
+        for good in ["release-v1", "x", "9lives", "q3-2026-launch"] {
+            assert!(is_valid_alias(good), "{good} should be valid");
+        }
+        assert!(is_valid_alias(&"a".repeat(63)), "63 chars is the cap");
+        for bad in [
+            "",
+            "Release-V1",
+            "-staging",
+            "release-",
+            "release--v1",
+            "my theory",
+            "plan.spl",
+            "../escape",
+            "café",
+        ] {
+            assert!(!is_valid_alias(bad), "{bad:?} should be refused");
+        }
+        assert!(!is_valid_alias(&"a".repeat(64)), "64 chars is id territory");
+        // Disjointness: everything the id grammar accepts, the alias
+        // grammar refuses — dispatch can never be ambiguous.
+        let id = blake3::hash(b"x").to_hex().to_string();
+        assert!(is_valid_theory_id(&id) && !is_valid_alias(&id));
     }
 
     /// REQ-104 trust boundary: `adopt` refuses a path-traversal theory id
