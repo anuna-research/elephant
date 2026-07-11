@@ -141,6 +141,21 @@ pub fn load(paths: &Paths) -> AppResult<Identity> {
         ));
     }
 
+    // Bind the private key to the document (REQ-001): the seed's public key
+    // must be one the DID document authorises. Without this, a swapped or
+    // corrupt key file loads happily under the old DID and every subsequent
+    // "successful" write is signed by a key no verifier accepts — a failure
+    // that only surfaces remotely, long after the cause.
+    let our_pk = signing_key.verifying_key();
+    if !verifying_keys_for(&doc_bytes, did.as_str())
+        .iter()
+        .any(|k| k == &our_pk)
+    {
+        return Err(AppError::Config(
+            "private key does not match the DID document — state dir is inconsistent".into(),
+        ));
+    }
+
     Ok(Identity {
         signing_key,
         did,
@@ -152,6 +167,46 @@ pub fn load(paths: &Paths) -> AppResult<Identity> {
 fn whoami_fallback(did: &Did) -> String {
     let id = did.method_specific_id();
     format!("agent-{}", &id[..8.min(id.len())])
+}
+
+/// The verification keys a serialized DID document publishes, but only if the
+/// document actually resolves to `expected_did`. Used by the join ceremony to
+/// verify a joiner's proof of possession (REQ-104): the joiner signs a
+/// session-bound challenge with its DID identity key, and the inviter checks
+/// that signature against the keys this returns — proving the joiner controls
+/// the DID it claims, and that the supplied document is that DID's document.
+/// Returns empty (verification must fail closed) on any parse/mismatch.
+pub fn verifying_keys_for(
+    doc_bytes: &[u8],
+    expected_did: &str,
+) -> Vec<ed25519_dalek::VerifyingKey> {
+    let Ok(document) = Document::from_bytes(doc_bytes) else {
+        return Vec::new();
+    };
+    let Ok(resolved) = document.resolve() else {
+        return Vec::new();
+    };
+    let Some(dd) = resolved.did_document else {
+        return Vec::new();
+    };
+    if dd.id != expected_did {
+        return Vec::new();
+    }
+    let mut keys = Vec::new();
+    for vm in &dd.verification_method {
+        let Some(b64) = vm.public_key_multibase.strip_prefix('u') else {
+            continue;
+        };
+        let Ok(bytes) = Base64UrlUnpadded::decode_vec(b64) else {
+            continue;
+        };
+        if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
+            if let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&arr) {
+                keys.push(vk);
+            }
+        }
+    }
+    keys
 }
 
 /// cbcl-rs R4 signer over the identity key.
@@ -267,6 +322,25 @@ mod tests {
         std::fs::write(paths.key_file(), b"short").unwrap();
         let err = load(&paths).unwrap_err();
         assert!(err.to_string().contains("wrong size"));
+    }
+
+    /// REQ-001 negative-input: a key file swapped for an unrelated (but
+    /// well-formed) seed must not load under the old DID — the private key is
+    /// bound to the DID document.
+    #[test]
+    fn swapped_private_key_is_rejected() {
+        let (_dir, paths) = temp_paths();
+        create(&paths, Some("alice".into())).unwrap();
+        // Overwrite the seed with a different, valid 32-byte key, leaving the
+        // DID document and profile untouched.
+        let other = SigningKey::from_bytes(&[9u8; 32]);
+        std::fs::remove_file(paths.key_file()).unwrap();
+        write_secret_file(&paths.key_file(), &other.to_bytes()).unwrap();
+        let err = load(&paths).unwrap_err();
+        assert!(
+            err.to_string().contains("private key does not match"),
+            "a mismatched key must be refused: {err}"
+        );
     }
 
     /// R4 signer roundtrip.

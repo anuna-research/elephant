@@ -21,6 +21,13 @@ pub const MLS_CONTAINER: &str = "mls";
 /// until the genesis bytes are hashed).
 pub const GENESIS_THEORY: &str = "genesis";
 
+/// Bounded clock skew for HLC ticks (SPEC-001): a remote wall_ms more than
+/// this far ahead of our physical time is ignored when allocating our next
+/// clock, so a crafted future stamp cannot drag our HLC forward or overflow
+/// the logical counter. Five minutes tolerates ordinary drift while rejecting
+/// the absurd.
+pub const MAX_CLOCK_SKEW_MS: u64 = 5 * 60 * 1000;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TheoryMeta {
     pub theory_id: String,
@@ -41,6 +48,18 @@ pub struct TheoryStore {
 /// did-crdt's node-id binding: low 64 bits (LE) of blake3(pubkey).
 pub fn node_id_for(ident: &Identity) -> u64 {
     did_crdt::core::validate::node_id_from_pubkey(ident.signing_key.verifying_key().as_bytes())
+}
+
+/// A theory id is the lowercase BLAKE3 hex of its genesis entry (see
+/// `create`): exactly 64 lowercase hex characters, nothing else. A peer-
+/// supplied id that is empty, an alias, or a crafted path fragment like
+/// `../../identity/did` must be refused before it is ever joined into a
+/// filesystem path (SPEC-002 REQ-104 — the join ceremony is a trust
+/// boundary).
+pub fn is_valid_theory_id(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 impl TheoryStore {
@@ -180,6 +199,21 @@ impl TheoryStore {
         steward_did: &str,
         steward_did_doc: &[u8],
     ) -> AppResult<TheoryStore> {
+        // Trust boundary: `theory_id` and `steward_did` arrive from the
+        // (authenticated) introduction but are still peer-controlled bytes.
+        // Refuse anything that is not a well-formed id/DID before either is
+        // joined into a path — a crafted `../` component must never escape
+        // the theory tree (SPEC-002 REQ-104).
+        if !is_valid_theory_id(theory_id) {
+            return Err(AppError::Config(format!(
+                "refusing to adopt malformed theory id {theory_id:?}"
+            )));
+        }
+        let steward = steward_did.parse::<did_crdt::Did>().map_err(|_| {
+            AppError::Config(format!(
+                "refusing to adopt malformed steward DID {steward_did:?}"
+            ))
+        })?;
         if let Some(existing) = resolve_alias(paths, alias)? {
             if existing != theory_id {
                 return Err(AppError::Config(format!(
@@ -202,10 +236,11 @@ impl TheoryStore {
         )?;
 
         // Both members' DID documents, so every signature verifies offline.
+        // Filenames are the DID's method-specific id (guaranteed 64 hex chars
+        // by the `Did` type), never the raw identifier — no path traversal.
         let members = dir.join("members");
-        let tail = |did: &str| did.rsplit(':').next().unwrap_or(did).to_string();
         std::fs::write(
-            members.join(format!("{}.json", tail(steward_did))),
+            members.join(format!("{}.json", steward.method_specific_id())),
             steward_did_doc,
         )?;
         std::fs::write(
@@ -235,6 +270,20 @@ impl TheoryStore {
 
     /// Persist after an external mutation of the doc (e.g. a sync import).
     pub fn flush_public(&self) -> AppResult<()> {
+        self.flush()
+    }
+
+    /// Persist peer deltas a sync session imported into this doc, under the
+    /// single-writer lock (REQ-102). Re-imports the on-disk snapshot first so
+    /// a concurrent local append (the daemon's HTTP path) is merged rather
+    /// than clobbered — both writers take `write.lock` and both re-read before
+    /// flushing, so the CRDT union is what lands on disk.
+    pub fn commit_synced(&self) -> AppResult<()> {
+        let _guard = self.write_lock()?;
+        if let Ok(snapshot) = std::fs::read(self.paths.theory_doc(&self.theory_id)) {
+            let _ = self.doc.import(&snapshot);
+        }
+        self.doc.commit();
         self.flush()
     }
 
@@ -313,15 +362,35 @@ impl TheoryStore {
     }
 
     /// Next HLC for a local append: monotone over everything we've seen.
+    ///
+    /// Peer entries carry attacker-influenced clocks. Two defences keep a
+    /// malicious HLC from poisoning ours (SPEC-001): we ignore any remote
+    /// wall_ms beyond a bounded skew ahead of our physical time (so a stamp
+    /// like `u64::MAX` cannot drag our clock forward), and we roll the logical
+    /// counter into the next millisecond on overflow instead of wrapping —
+    /// which in debug builds would panic and in release would repeat a
+    /// (wall, logical) pair and mint duplicate sentence ids.
     pub fn tick(&self, ident: &Identity, wall_ms: u64) -> Hlc {
         let node_id = node_id_for(ident);
         let (entries, _) = self.entries();
-        let max_seen = entries.iter().map(|e| e.hlc).max();
+        let horizon = wall_ms.saturating_add(MAX_CLOCK_SKEW_MS);
+        let max_seen = entries
+            .iter()
+            .map(|e| e.hlc)
+            .filter(|h| h.wall_ms <= horizon)
+            .max();
         match max_seen {
-            Some(last) if wall_ms <= last.wall_ms => Hlc {
-                wall_ms: last.wall_ms,
-                logical: last.logical + 1,
-                node_id,
+            Some(last) if wall_ms <= last.wall_ms => match last.logical.checked_add(1) {
+                Some(logical) => Hlc {
+                    wall_ms: last.wall_ms,
+                    logical,
+                    node_id,
+                },
+                None => Hlc {
+                    wall_ms: last.wall_ms.saturating_add(1),
+                    logical: 0,
+                    node_id,
+                },
             },
             _ => Hlc {
                 wall_ms,
@@ -597,6 +666,39 @@ mod tests {
         (dir, paths, ident)
     }
 
+    /// A theory id is exactly 64 lowercase hex chars (BLAKE3 output); an
+    /// alias, an empty string, or a crafted path fragment is not (REQ-104).
+    #[test]
+    fn theory_id_validation_shape() {
+        assert!(is_valid_theory_id(blake3::hash(b"x").to_hex().as_str()));
+        assert!(is_valid_theory_id(&"a".repeat(64)));
+        assert!(!is_valid_theory_id("release-v3"));
+        assert!(!is_valid_theory_id(""));
+        assert!(!is_valid_theory_id("../../../identity/did"));
+        assert!(!is_valid_theory_id(&"a".repeat(63)));
+        assert!(
+            !is_valid_theory_id(&"A".repeat(64)),
+            "uppercase is not BLAKE3 output"
+        );
+    }
+
+    /// REQ-104 trust boundary: `adopt` refuses a path-traversal theory id
+    /// rather than joining it into the theory tree and escaping.
+    #[test]
+    fn adopt_refuses_traversal_theory_id() {
+        let (_d, paths, ident) = setup();
+        let (keybook, _k0) = crate::e2ee::keybook::Keybook::genesis();
+        let did = ident.did.to_string();
+        let doc = ident.document.to_bytes().unwrap();
+        let escape = format!("..{sep}..{sep}pwn", sep = std::path::MAIN_SEPARATOR);
+        let err = TheoryStore::adopt(&paths, &ident, &escape, "alias", keybook, &did, &doc);
+        assert!(err.is_err(), "traversal theory id must be refused by adopt");
+        assert!(
+            !paths.home.join("pwn").exists() && !paths.home.parent().unwrap().join("pwn").exists(),
+            "nothing may be written outside the theory tree"
+        );
+    }
+
     /// TEST-003: create → genesis verifies, id = blake3(genesis bytes).
     #[test]
     fn create_theory_and_reload() {
@@ -634,6 +736,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(act.performative(), "assert");
+    }
+
+    /// SPEC-001 regression: a peer-sealed entry stamped at the end of time
+    /// with a saturated logical counter must not poison our next `tick()` —
+    /// no panic (debug), no wrap to a duplicate clock (release).
+    #[test]
+    fn tick_ignores_absurd_future_clock() {
+        let (_d, paths, ident) = setup();
+        let store = TheoryStore::create(
+            &paths,
+            &ident,
+            "t",
+            1_752_000_000_000,
+            "2026-07-11T00:00:00Z",
+        )
+        .unwrap();
+        let theory_id = store.theory_id.clone();
+        let node_id = node_id_for(&ident);
+        let evil_hlc = Hlc {
+            wall_ms: u64::MAX,
+            logical: u32::MAX,
+            node_id,
+        };
+        let sid = Entry::sentence_id(&theory_id, ident.did.as_str(), evil_hlc);
+        let evil = Entry::create(
+            &theory_id,
+            evil_hlc,
+            ident.did.as_str(),
+            &format!("{}#key-0", ident.did.as_str()),
+            &SpeechAct::Assert {
+                sentence_id: sid,
+                spl: "(given evil)".into(),
+            },
+            "2026-07-11T00:00:00Z",
+            &ident.signing_key,
+        );
+        store.append(&evil).unwrap();
+
+        let now = 1_752_000_100_000;
+        let next = store.tick(&ident, now); // must not panic
+        assert_eq!(next.wall_ms, now, "the absurd future stamp is ignored");
+        assert_eq!(next.logical, 0);
+        assert_eq!(next.node_id, node_id);
     }
 
     /// TEST-003 negative-input: duplicate alias refused.

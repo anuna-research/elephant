@@ -4,5 +4,7 @@ pub mod invite;
 pub mod join;
 pub mod pake;
 pub mod run;
+pub mod sync;
+pub mod sync_dialect;
 pub mod transport;
 pub mod wire;

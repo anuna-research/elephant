@@ -411,6 +411,12 @@ mod tests {
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
     }
 
+    /// The HLC node id `validate_entry` requires: the one derived from the
+    /// signer's key, not an arbitrary label.
+    fn node(seed: u8) -> u64 {
+        did_crdt::core::validate::node_id_from_pubkey(key(seed).verifying_key().as_bytes())
+    }
+
     fn did(seed: u8) -> String {
         format!("did:crdt:{}", format!("{seed:02x}").repeat(32))
     }
@@ -433,7 +439,7 @@ mod tests {
             let hlc = Hlc {
                 wall_ms: 1_752_000_000_000 + self.counter,
                 logical: 0,
-                node_id: seed as u64,
+                node_id: node(seed),
             };
             let e = Entry::create(
                 "th-x",
@@ -463,7 +469,7 @@ mod tests {
             let hlc = Hlc {
                 wall_ms: 1_752_000_000_000 + self.counter + 1,
                 logical: 0,
-                node_id: seed as u64,
+                node_id: node(seed),
             };
             Entry::sentence_id("th-x", &did(seed), hlc)
         }
@@ -514,7 +520,7 @@ mod tests {
         let hlc = Hlc {
             wall_ms: 1_784_000_000_005,
             logical: 0,
-            node_id: 1,
+            node_id: node(1),
         };
         let spoof = Entry::create(
             "genesis",

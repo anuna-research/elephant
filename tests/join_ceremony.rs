@@ -55,6 +55,7 @@ async fn happy_path_join_and_sync() {
 
     let invite = p2p::invite::Invite::generate();
     let password = invite.password();
+    let alice_pk = p2p::transport::node_pk(&alice.ident);
 
     let (mut sa, mut sb) = duplex(4 * 1024 * 1024);
     let (a_paths, a_ident, tid) = (alice.paths.clone(), alice.ident, theory_id.clone());
@@ -129,6 +130,18 @@ async fn happy_path_join_and_sync() {
     assert!(
         holds.iter().any(|l| l.starts_with("member")),
         "roster fact present: {holds:?}"
+    );
+    // REQ-107 / BUG-002 regression: the roster must name BOTH transport keys
+    // — the steward's included — or steady-state sync between steward and a
+    // single member is refused in both directions (see tests/sync_live.rs).
+    let roster = p2p::sync::roster_node_pks(&bob.paths, &theory_id).unwrap();
+    assert!(
+        roster.contains(&alice_pk),
+        "steward's transport key on the roster: {roster:?}"
+    );
+    assert!(
+        roster.contains("bob-node-pk"),
+        "joiner's transport key on the roster: {roster:?}"
     );
 
     // REQ-108: both replicas converged.

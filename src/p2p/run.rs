@@ -6,12 +6,58 @@ use crate::cli::Ctx;
 use crate::errors::{AppError, AppResult};
 use crate::store::TheoryStore;
 
+/// Parse an invite TTL like `30s`, `15m`, `2h` into a duration. An invalid,
+/// zero, or unbounded TTL is refused: the 22-bit invite secret is only safe
+/// behind an expiring, single-use invite (SPEC-002 REQ-110 / ADR-102).
+fn parse_ttl(s: &str) -> AppResult<std::time::Duration> {
+    let s = s.trim();
+    let split = s
+        .find(|c: char| !c.is_ascii_digit())
+        .ok_or_else(|| AppError::Usage(format!("invalid --ttl '{s}': use e.g. 30s, 15m, 2h")))?;
+    let (num, unit) = s.split_at(split);
+    let n: u64 = num
+        .parse()
+        .map_err(|_| AppError::Usage(format!("invalid --ttl '{s}': use e.g. 30s, 15m, 2h")))?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        other => {
+            return Err(AppError::Usage(format!(
+                "invalid --ttl unit '{other}' in '{s}': use s, m, or h"
+            )));
+        }
+    };
+    if secs == 0 {
+        return Err(AppError::Usage("--ttl must be greater than zero".into()));
+    }
+    const MAX_TTL_SECS: u64 = 24 * 3600;
+    if secs > MAX_TTL_SECS {
+        return Err(AppError::Usage(format!(
+            "--ttl '{s}' exceeds the 24h maximum for a single-use invite"
+        )));
+    }
+    Ok(std::time::Duration::from_secs(secs))
+}
+
 /// `elephant theory invite <theory>` (REQ-103): mint a code, bind the
 /// rendezvous listener, run the inviter side for the first connection.
-pub fn invite(ctx: &Ctx, theory: &str, _ttl: &str) -> AppResult<()> {
+pub fn invite(ctx: &Ctx, theory: &str, ttl: &str) -> AppResult<()> {
+    let ttl = parse_ttl(ttl)?;
     let ident = crate::id::load(&ctx.paths)?;
     let store = TheoryStore::open(&ctx.paths, theory)?;
     let theory_id = store.theory_id.clone();
+    // Only the steward (group creator, MLS leaf 0) may admit members —
+    // add commits from anyone else are rejected by every peer (ADR-303), so a
+    // non-steward invite would only mint a divergent local group. Fail early.
+    if store.steward()? != ident.did.to_string() {
+        return Err(AppError::Usage(
+            "only the theory's steward (creator) may invite members".into(),
+        ));
+    }
+    // Finish any epoch change a prior invite/removal left unpublished before
+    // starting a new one (SPEC-004 REQ-306 crash-safety).
+    crate::e2ee::recover_outbox(&ctx.paths, &store, &ident)?;
     drop(store);
     let invite = Invite::generate();
 
@@ -34,28 +80,43 @@ pub fn invite(ctx: &Ctx, theory: &str, _ttl: &str) -> AppResult<()> {
         let listener = transport::rendezvous_listener(&invite).await?;
         let endpoint_hint = transport::addr_hint(&listener);
         let password = invite.password();
-        // Accept a single joiner (single-use invite, REQ-110).
-        let incoming = listener.accept().await.ok_or_else(|| {
-            AppError::Transport("rendezvous closed before a joiner arrived".into())
-        })?;
-        let conn = incoming
+        // Bound the whole handshake by the TTL: an absent or stalled joiner
+        // must not keep the invite live forever (REQ-110). Expiry is the
+        // security argument for the short invite secret, so it is enforced,
+        // not advisory.
+        let ceremony = async {
+            // Accept a single joiner (single-use invite, REQ-110).
+            let incoming = listener.accept().await.ok_or_else(|| {
+                AppError::Transport("rendezvous closed before a joiner arrived".into())
+            })?;
+            let conn = incoming
+                .await
+                .map_err(|e| AppError::Transport(format!("handshake: {e}")))?;
+            let (send, recv) = conn
+                .accept_bi()
+                .await
+                .map_err(|e| AppError::Transport(format!("accept stream: {e}")))?;
+            let mut stream = tokio::io::join(recv, send);
+            join::inviter_side(
+                &mut stream,
+                &ctx.paths,
+                &ident,
+                &theory_id,
+                &invite.rendezvous_hint(),
+                &password,
+                &endpoint_hint,
+            )
             .await
-            .map_err(|e| AppError::Transport(format!("handshake: {e}")))?;
-        let (send, recv) = conn
-            .accept_bi()
-            .await
-            .map_err(|e| AppError::Transport(format!("accept stream: {e}")))?;
-        let mut stream = tokio::io::join(recv, send);
-        let joined = join::inviter_side(
-            &mut stream,
-            &ctx.paths,
-            &ident,
-            &theory_id,
-            &invite.rendezvous_hint(),
-            &password,
-            &endpoint_hint,
-        )
-        .await?;
+        };
+        let joined = match tokio::time::timeout(ttl, ceremony).await {
+            Ok(result) => result?,
+            Err(_) => {
+                listener.close().await;
+                return Err(AppError::Transport(
+                    "invite expired before a joiner completed the handshake".into(),
+                ));
+            }
+        };
         listener.close().await;
         Ok::<_, AppError>(joined)
     })
@@ -190,8 +251,14 @@ pub(crate) fn remove_member_inner(
     did: &str,
 ) -> AppResult<String> {
     use crate::core::envelope::{Entry, SpeechAct};
-    let mut store = TheoryStore::open(paths, theory)?;
+    let store = TheoryStore::open(paths, theory)?;
     let theory_id = store.theory_id.clone();
+    // Finish any prior interrupted epoch change before starting this removal,
+    // then reopen so the store reflects anything recovery published
+    // (SPEC-004 REQ-306 crash-safety).
+    crate::e2ee::recover_outbox(paths, &store, ident)?;
+    drop(store);
+    let mut store = TheoryStore::open(paths, theory)?;
 
     let provider = crate::e2ee::open_provider(paths, &theory_id)?;
     let mls_ident = crate::e2ee::MlsIdentity::for_theory(ident, &theory_id);
@@ -228,19 +295,26 @@ pub(crate) fn remove_member_inner(
 
     // MLS remove → new epoch; rotate the corpus key. Rotation shares the
     // corpus write lock, so no in-flight appender can seal under the old
-    // generation once it returns.
-    let commit = crate::e2ee::remove_member(&provider, &mut group, &mls_ident, did)?;
+    // generation once it returns. `pre_gen` (the keybook generation before
+    // rotation) is recorded in the outbox so a crash mid-removal is completed
+    // exactly once by recovery (SPEC-004 REQ-306).
+    let pre_gen = store.keybook().map(|k| k.current).unwrap_or(0);
+    let commit = crate::e2ee::remove_member(&provider, &mut group, &mls_ident, did, pre_gen)?;
     store.rotate_keybook()?;
 
     // Propagate: the commit moves remaining members to the new epoch, and
     // the rotated keybook — MLS-encrypted to that epoch, so the removed
     // member cannot open it — hands them K_{gen+1}. Both ride the `mls`
-    // lane, delivered by every subsequent sync session (REQ-108).
+    // lane, delivered by every subsequent sync session (REQ-108). Record the
+    // sealed keybook in the outbox before publishing, then clear it once both
+    // messages are durably on the lane.
     let keybook = store
         .keybook()
         .ok_or_else(|| AppError::Config("no keybook after rotation".into()))?;
     let kb_msg = crate::e2ee::encrypt_app(&provider, &mut group, &mls_ident, &keybook.to_bytes())?;
+    crate::e2ee::append_outbox_keybook(paths, &theory_id, &kb_msg)?;
     store.push_mls(&[commit, kb_msg])?;
+    crate::e2ee::clear_outbox(paths, &theory_id)?;
 
     // Roster update (REQ-305): the roster derives from positive member
     // facts, so a separate `removed` fact alone would leave the DID listed —
@@ -413,6 +487,95 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// REQ-110: the invite TTL is parsed and validated; invalid, zero, and
+    /// unbounded values are refused so the short invite secret always expires.
+    #[test]
+    fn ttl_parsing_and_bounds() {
+        use std::time::Duration;
+        assert_eq!(parse_ttl("30s").unwrap(), Duration::from_secs(30));
+        assert_eq!(parse_ttl("15m").unwrap(), Duration::from_secs(900));
+        assert_eq!(parse_ttl("2h").unwrap(), Duration::from_secs(7200));
+        assert!(parse_ttl("0s").is_err(), "zero TTL must be refused");
+        assert!(parse_ttl("").is_err());
+        assert!(parse_ttl("15").is_err(), "unit is required");
+        assert!(parse_ttl("m").is_err(), "number is required");
+        assert!(parse_ttl("10d").is_err(), "unknown unit");
+        assert!(parse_ttl("25h").is_err(), "beyond the 24h maximum");
+    }
+
+    /// REQ-110: a listener with no joiner expires at the TTL rather than
+    /// waiting forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invite_expires_when_no_joiner_arrives() {
+        // A ceremony that never resolves (no joiner) must be cut off by the
+        // timeout — this is the exact wrapper `invite` applies.
+        let ttl = std::time::Duration::from_millis(50);
+        let never = std::future::pending::<AppResult<String>>();
+        let outcome = tokio::time::timeout(ttl, never).await;
+        assert!(outcome.is_err(), "the TTL must bound an idle handshake");
+    }
+
+    /// SPEC-004 REQ-306 crash-safety: if the steward advances its MLS epoch
+    /// (a removal) but crashes before publishing the commit to the lane, the
+    /// durable outbox lets `recover_outbox` finish the job — the commit AND the
+    /// rotated keybook reach the lane, and the outbox is cleared.
+    #[test]
+    fn outbox_recovers_an_unpublished_removal() {
+        let alice = member("alice");
+        let a_store = TheoryStore::create(
+            &alice.paths,
+            &alice.ident,
+            "t",
+            1_784_000_000_000,
+            "2026-07-11T00:00:00Z",
+        )
+        .unwrap();
+        let theory_id = a_store.theory_id.clone();
+        let bob = member("bob");
+        let _b = admit(&alice, &a_store, &bob, "t");
+        // Isolate the removal: drop the add's (already-published) outbox.
+        e2ee::clear_outbox(&alice.paths, &theory_id).unwrap();
+
+        // Simulate a crash: create the remove commit (writes the outbox and
+        // merges our epoch) but never publish it to the lane, and never rotate
+        // the keybook.
+        let provider = e2ee::open_provider(&alice.paths, &theory_id).unwrap();
+        let mls = MlsIdentity::for_theory(&alice.ident, &theory_id);
+        let mut group = e2ee::load_group(&provider, &theory_id).unwrap().unwrap();
+        let pre_gen = a_store.keybook().map(|k| k.current).unwrap_or(0);
+        let commit =
+            e2ee::remove_member(&provider, &mut group, &mls, bob.ident.did.as_str(), pre_gen)
+                .unwrap();
+        drop(group);
+        drop(provider);
+
+        let a_store = TheoryStore::open(&alice.paths, &theory_id).unwrap();
+        assert!(
+            !a_store.mls_lane().iter().any(|m| m == &commit),
+            "precondition: the commit is not yet on the lane"
+        );
+
+        // Recovery finishes the interrupted removal.
+        assert!(
+            e2ee::recover_outbox(&alice.paths, &a_store, &alice.ident).unwrap(),
+            "recovery must run"
+        );
+        let a_store = TheoryStore::open(&alice.paths, &theory_id).unwrap();
+        assert!(
+            a_store.mls_lane().iter().any(|m| m == &commit),
+            "recovery must publish the buffered commit"
+        );
+        assert!(
+            a_store.mls_lane().len() >= 2,
+            "recovery must also seal and publish the rotated keybook"
+        );
+        // Second run is a no-op: the outbox was cleared.
+        assert!(
+            !e2ee::recover_outbox(&alice.paths, &a_store, &alice.ident).unwrap(),
+            "recovery is idempotent once the outbox is cleared"
+        );
     }
 
     /// REQ-305 end to end: removing a member publishes the MLS commit and

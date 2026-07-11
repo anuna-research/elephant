@@ -1,8 +1,8 @@
 ---
 id: SPEC-002
 title: elephant p2p — daemon, SPAKE2 join, pkarr discovery, Loro sync
-version: 0.1.0
-status: implemented
+version: 0.1.2
+status: implementing
 date: 2026-07-11
 last-updated: 2026-07-11
 audience: agent, human reviewer
@@ -119,25 +119,32 @@ Trace: [[#TEST-104]] · [[#CON-102]] · [[#CON-104]] ·
 Completing [[#REQ-104]] SHALL cause the inviter to append a signed
 membership Entry — an `assert` of
 `(given (member <joiner-did> <joiner-node-pk>))` — into the theory
-corpus, binding the joiner's DID to its transport public key. The roster
-of a theory at any time IS the closure-derived set of `member` facts
-asserted by the creator or by existing members (chain rooted at the
-genesis creator).
+corpus, binding the joiner's DID to its transport public key. On the
+FIRST admission the inviter SHALL also append its own
+`(given (member <steward-did> <steward-node-pk>))` fact (deduplicated
+on later invites): the steward's transport key is not derivable by
+peers, and without it on the roster the [[#REQ-107]] gate refuses
+steward↔member steady-state sync in both directions (BUG-002). The
+roster of a theory at any time IS the closure-derived set of `member`
+facts asserted by the creator or by existing members (chain rooted at
+the genesis creator).
 
-Trace: [[#TEST-105]] · [[#ADR-103]]
+Trace: [[#TEST-105]] · [[#TEST-115]] · [[#ADR-103]]
 
-> **Status note (v0.1, honest):** REQ-106/107/108 describe the
-> *steady-state* sync loop between already-joined members. In v0.1 the
-> join-time corpus handover ([[#REQ-104]] → the ceremony's final
-> `sync_session`) is implemented and tested (a joiner pulls the whole
-> history and both replicas converge with equal version vectors), and the
-> discovery/transport primitives (durable endpoint, DHT publish,
-> `sync_endpoint`/`dial_sync`, [[#CON-103]] `sync_session`) exist. What is
-> **not yet built** is the daemon's steady-state accept loop that runs the
-> roster gate and re-syncs after the initial join. These three REQs are
-> therefore `implementing`, not `implemented`; the [[#CON-103]] convergence
-> property and the transport binding are already covered. Tracked as the
-> primary v0.2 work.
+> **Status note (v0.1, honest):** REQ-107/108 — the *steady-state* sync loop
+> between already-joined members — are now implemented. The daemon (opt-in via
+> `ELEPHANT_SYNC_INTERVAL`) serves incoming sync sessions behind the roster
+> gate and dials each theory's roster peers on the interval; deltas ride the
+> `cbcl-elephant-sync` dialect ([[#CON-103]]). The roster gate, dialect, sync
+> session, grow-only import, and end-to-end convergence are covered by unit
+> and in-memory-duplex tests, and the COMPOSED loops — real join, both
+> daemons' accept+dial loops, live iroh QUIC on 127.0.0.1 with injected
+> addresses — by the `#[ignore]`d two-daemon loopback e2e
+> (tests/sync_live.rs, [[#TEST-115]]; run with `cargo test -- --ignored`).
+> It is **opt-in** rather than on-by-default only because live QUIC cannot
+> be exercised in CI (both live tests are `#[ignore]`d). REQ-106 remains
+> `implementing`: the durable endpoint binds and publishes to the DHT, but
+> an explicit republish-before-expiry loop is still deferred to v0.2.
 
 #### REQ-106: Durable discovery `[implementing]`
 
@@ -150,15 +157,15 @@ republish loop is v0.2.)
 
 Trace: [[#TEST-106]] · [[#CON-104]]
 
-#### REQ-107: Roster gate `[implementing]`
+#### REQ-107: Roster gate `[implemented]`
 
 The daemon SHALL accept a sync connection for a theory only from a
 transport key bound to a member DID by the theory's roster
 ([[#REQ-105]]); non-members SHALL be refused before any sync frame is
 parsed. A resolved DHT record is an unauthenticated hint and SHALL
-confer no access by itself. (v0.1: the roster IS derivable from `member`
-facts and confidentiality is held by the seal regardless; the
-`ALPN_SYNC` accept loop that enforces the gate is v0.2.)
+confer no access by itself. (The `ALPN_SYNC` accept loop enforces the gate
+against the QUIC connection's authenticated `remote_id`, keyed off the
+closure-derived roster `node_pk`s — `p2p::sync::sync_as_responder`.)
 
 Trace: [[#TEST-107]]
 
@@ -169,8 +176,9 @@ ship only missing updates ([[#CON-103]]); after exchange, both oplog
 version vectors SHALL be equal. Every remotely-received Entry passes
 merge-time validation ([[SPEC-001-elephant-core#REQ-022]]) before it can
 influence closure — transport authentication never substitutes for
-Entry verification. (v0.1: implemented and tested for the join-time
-handover; steady-state re-sync is v0.2 — see the status note above.)
+Entry verification. (Implemented for both the join-time handover and
+steady-state re-sync, the latter opt-in via `ELEPHANT_SYNC_INTERVAL` — see
+the status note above. Deltas ride the `cbcl-elephant-sync` dialect.)
 
 Trace: [[#TEST-108]] · [[#CON-103]]
 
@@ -375,6 +383,7 @@ Implements: [[#REQ-103]] [[#REQ-106]]. Verified by: [[#TEST-106]].
 | TEST-112 | NFR-101/102/103 | timed harness, localhost + netem | — | budgets exceeded → fail |
 | TEST-113 | CON-101/102 | fuzz: control frames, invite codes | crash/hang → fail | — |
 | TEST-114 | CON-103/REQ-021 | property: random partitions/reorders/dupes ⇒ convergence | — | divergent closures on equal corpora → fail |
+| TEST-115 | REQ-105/107/108 composed | two-daemon loopback e2e: real join, both sync loops over live QUIC, facts converge both directions, equal vv (`#[ignore]`d, manual) | — | either direction refused by the roster gate → fail (BUG-002 regression) |
 
 Verification techniques: fuzzing REQUIRED at all three network-facing
 recognisers (control frames, invite codes, sync frames feeding Loro
@@ -395,6 +404,17 @@ structured audit line (invite id, outcome, no secrets).
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.2 — two-daemon loopback e2e added (tests/sync_live.rs, [[#TEST-115]]):
+  the composed sync loops over live iroh QUIC on 127.0.0.1, addresses
+  injected via `MemoryLookup` (no DHT). Its red run found BUG-002: no
+  member fact ever named the steward's transport key, so the [[#REQ-107]]
+  roster gate refused steward↔member steady-state sync in both directions
+  (the duplex tests hand-crafted rosters and missed the composition).
+  Fixed in `inviter_side` (steward self-fact on first admission,
+  deduplicated); [[#REQ-105]] restated; CI regression pin in
+  tests/join_ceremony.rs. `sync::run` split into `run_with_endpoint` for
+  endpoint injection (behavior unchanged).
 
 - 0.1.1 — adversarial review round: single-writer discipline now enforced by a per-theory exclusive write lock (fixes silent lost updates on the direct-append and join-write paths); daemon bearer-token comparison made constant-time; REQ-106/107/108 status corrected to `implementing` (steady-state sync loop is v0.2).
 

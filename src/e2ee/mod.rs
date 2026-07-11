@@ -14,8 +14,8 @@ use crate::errors::{AppError, AppResult};
 use crate::id::Identity;
 use openmls::prelude::{
     BasicCredential, Ciphersuite, CredentialWithKey, KeyPackage, KeyPackageBundle, KeyPackageIn,
-    MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn,
-    MlsMessageOut, ProcessedMessageContent, ProtocolMessage, ProtocolVersion,
+    LeafNodeIndex, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn,
+    MlsMessageIn, MlsMessageOut, ProcessedMessageContent, ProtocolMessage, ProtocolVersion, Sender,
     SenderRatchetConfiguration, StagedWelcome,
 };
 use openmls_basic_credential::SignatureKeyPair;
@@ -212,6 +212,12 @@ pub fn key_package_from_bytes(
 }
 
 /// Steward adds a member: returns (commit for the `mls` lane, welcome).
+///
+/// Crash-safety (SPEC-004 REQ-306): the commit is persisted and recorded in a
+/// durable outbox BEFORE our epoch is merged, so if we crash after the merge
+/// the outbox still carries the commit and [`recover_outbox`] republishes it —
+/// peers can never be left an epoch behind. The caller MUST publish the
+/// returned commit to the `mls` lane and then [`clear_outbox`].
 pub fn add_member(
     provider: &DurableProvider,
     group: &mut MlsGroup,
@@ -221,19 +227,33 @@ pub fn add_member(
     let (commit, welcome, _) = group
         .add_members(provider, &ident.signer, &[kp])
         .map_err(MlsError::stack("add member"))?;
+    // Persist the pending commit, then record it durably before advancing.
+    provider.persist()?;
+    let commit_bytes = serialize_out(&commit)?;
+    write_outbox(
+        provider,
+        &Outbox {
+            msgs: vec![commit_bytes.clone()],
+            remove_pre_gen: None,
+        },
+    )?;
     group
         .merge_pending_commit(provider)
         .map_err(MlsError::stack("merge add commit"))?;
     provider.persist()?;
-    Ok((serialize_out(&commit)?, serialize_out(&welcome)?))
+    Ok((commit_bytes, serialize_out(&welcome)?))
 }
 
-/// REQ-305: steward removes a member (new epoch).
+/// REQ-305: steward removes a member (new epoch). `pre_gen` is the keybook
+/// generation before the caller rotates it — recorded in the outbox so
+/// recovery can complete the rotation exactly once (see [`recover_outbox`]).
+/// Same crash-safety contract as [`add_member`].
 pub fn remove_member(
     provider: &DurableProvider,
     group: &mut MlsGroup,
     ident: &MlsIdentity,
     did: &str,
+    pre_gen: u32,
 ) -> Result<Vec<u8>, MlsError> {
     let target = group
         .members()
@@ -242,11 +262,180 @@ pub fn remove_member(
     let (commit, _, _) = group
         .remove_members(provider, &ident.signer, &[target.index])
         .map_err(MlsError::stack("remove member"))?;
+    provider.persist()?;
+    let commit_bytes = serialize_out(&commit)?;
+    write_outbox(
+        provider,
+        &Outbox {
+            msgs: vec![commit_bytes.clone()],
+            remove_pre_gen: Some(pre_gen),
+        },
+    )?;
     group
         .merge_pending_commit(provider)
         .map_err(MlsError::stack("merge remove commit"))?;
     provider.persist()?;
     serialize_out(&commit)
+}
+
+// ── transactional outbox (SPEC-004 REQ-306 crash-safety) ────────────────
+//
+// A steward that advances the MLS epoch must not do so without a durable
+// record of the commit peers need. We write the commit to `mls/outbox.json`
+// BEFORE merging our epoch, publish it to the Loro `mls` lane, then clear the
+// outbox. A crash between the merge and the publish leaves the outbox behind;
+// `recover_outbox` — run before the next steward operation — finishes the
+// publication (and, for a removal, completes the keybook rotation exactly
+// once via the recorded pre-rotation generation).
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Outbox {
+    /// Lane messages awaiting publication: `[commit]`, or `[commit, keybook]`
+    /// once a removal's rotated keybook has been sealed to the new epoch.
+    #[serde(with = "outbox_b64")]
+    msgs: Vec<Vec<u8>>,
+    /// Present iff this is a removal; the keybook generation before rotation,
+    /// so recovery rotates at most once (idempotent).
+    remove_pre_gen: Option<u32>,
+}
+
+fn outbox_path(provider: &DurableProvider) -> std::path::PathBuf {
+    provider.path().with_file_name("outbox.json")
+}
+
+fn write_outbox(provider: &DurableProvider, ob: &Outbox) -> Result<(), MlsError> {
+    let path = outbox_path(provider);
+    let bytes = serde_json::to_vec(ob).map_err(std::io::Error::other)?;
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &bytes)?;
+    // fsync the temp file, then rename, so the record is durable before we
+    // advance the epoch.
+    std::fs::File::open(&tmp)?.sync_all()?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+fn read_outbox(provider: &DurableProvider) -> Result<Option<Outbox>, MlsError> {
+    match std::fs::read(outbox_path(provider)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(MlsError::Storage(e)),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| MlsError::Stack(format!("outbox: {e}"))),
+    }
+}
+
+/// Clear the outbox after the commit (and keybook) are durably on the lane.
+pub fn clear_outbox(paths: &crate::paths::Paths, theory_id: &str) -> AppResult<()> {
+    let provider = open_provider(paths, theory_id)?;
+    let path = outbox_path(&provider);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(MlsError::Storage(e).into()),
+    }
+}
+
+/// Append the removal's sealed keybook message to the outbox, so recovery can
+/// republish the exact bytes rather than re-encrypting (which would ratchet).
+/// Called by the steward's removal path after sealing the rotated keybook,
+/// before publishing to the lane.
+pub fn append_outbox_keybook(
+    paths: &crate::paths::Paths,
+    theory_id: &str,
+    kb_msg: &[u8],
+) -> AppResult<()> {
+    let provider = open_provider(paths, theory_id)?;
+    if let Some(mut ob) = read_outbox(&provider)? {
+        ob.msgs.push(kb_msg.to_vec());
+        write_outbox(&provider, &ob)?;
+    }
+    Ok(())
+}
+
+/// Finish any interrupted steward epoch change (SPEC-004 REQ-306). Run before
+/// a steward starts a new invite/removal, or on daemon start. Idempotent:
+/// returns false when there is nothing to recover. Merges a persisted-but-
+/// unmerged commit, completes a removal's keybook rotation exactly once, and
+/// republishes to the lane unless the commit is already there.
+pub fn recover_outbox(
+    paths: &crate::paths::Paths,
+    store: &crate::store::TheoryStore,
+    ident: &Identity,
+) -> AppResult<bool> {
+    let theory_id = store.theory_id.clone();
+    let provider = open_provider(paths, &theory_id)?;
+    let Some(mut ob) = read_outbox(&provider)? else {
+        return Ok(false);
+    };
+    let Some(commit) = ob.msgs.first().cloned() else {
+        clear_outbox(paths, &theory_id)?;
+        return Ok(false);
+    };
+    let Some(mut group) = load_group(&provider, &theory_id)? else {
+        clear_outbox(paths, &theory_id)?;
+        return Ok(false);
+    };
+    let mls_ident = MlsIdentity::for_theory(ident, &theory_id);
+
+    // 1. Advance our epoch if the crash landed before the merge.
+    if group.pending_commit().is_some() {
+        group
+            .merge_pending_commit(&provider)
+            .map_err(MlsError::stack("recover: merge pending"))?;
+        provider.persist().map_err(AppError::from)?;
+    }
+
+    // 2. If the commit already reached the lane, the publish succeeded; just
+    //    clear the outbox.
+    if store.mls_lane().iter().any(|m| m == &commit) {
+        clear_outbox(paths, &theory_id)?;
+        return Ok(true);
+    }
+
+    // 3. For a removal whose keybook message was not yet sealed, complete the
+    //    rotation exactly once (guarded by the recorded pre-rotation
+    //    generation) and seal it to the new epoch.
+    if let Some(pre_gen) = ob.remove_pre_gen {
+        if ob.msgs.len() < 2 {
+            let path = keybook::keybook_path(paths, &theory_id);
+            let mut kb = keybook::Keybook::load(&path)?
+                .ok_or_else(|| AppError::Config("recover: no keybook".into()))?;
+            if kb.current == pre_gen {
+                kb.rotate();
+                kb.save(&path)?;
+            }
+            let kb_msg = encrypt_app(&provider, &mut group, &mls_ident, &kb.to_bytes())?;
+            ob.msgs.push(kb_msg);
+        }
+    }
+
+    // 4. Publish everything the outbox holds, then clear it.
+    store.push_mls(&ob.msgs)?;
+    clear_outbox(paths, &theory_id)?;
+    Ok(true)
+}
+
+mod outbox_b64 {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    use serde::{Deserialize, Deserializer, Serializer, ser::SerializeSeq};
+
+    pub fn serialize<S: Serializer>(msgs: &[Vec<u8>], s: S) -> Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(Some(msgs.len()))?;
+        for m in msgs {
+            seq.serialize_element(&B64.encode(m))?;
+        }
+        seq.end()
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        let strs = Vec::<String>::deserialize(d)?;
+        strs.into_iter()
+            .map(|s| B64.decode(&s).map_err(serde::de::Error::custom))
+            .collect()
+    }
 }
 
 /// Join from a Welcome (the joiner's side of the ceremony).
@@ -262,15 +451,19 @@ pub fn join_from_welcome(
     };
     let staged = StagedWelcome::new_from_welcome(provider, &join_config(), welcome, None)
         .map_err(MlsError::stack("stage welcome"))?;
-    // The steward must be in the delivered tree under the DID we
-    // authenticated via SPAKE2 (REQ-302 / roster binding).
-    let steward_present = staged
+    // The steward must be leaf 0 of the delivered tree (the group creator),
+    // carrying the DID we authenticated via SPAKE2 (REQ-302 / roster
+    // binding). Pinning leaf 0 — not merely "some leaf" — is what lets later
+    // commit authorisation trust the leaf index instead of a spoofable
+    // credential string (see `process_inbound`).
+    let steward_is_leaf_0 = staged
         .members()
-        .any(|m| m.credential.serialized_content() == expected_steward_did.as_bytes());
-    if !steward_present {
+        .find(|m| m.index == LeafNodeIndex::new(0))
+        .is_some_and(|m| m.credential.serialized_content() == expected_steward_did.as_bytes());
+    if !steward_is_leaf_0 {
         provider.rollback_to_disk()?;
         return Err(MlsError::Rejected(format!(
-            "welcome tree does not contain the authenticated steward {expected_steward_did}"
+            "welcome tree's leaf 0 is not the authenticated steward {expected_steward_did}"
         )));
     }
     let group = staged
@@ -333,6 +526,7 @@ pub fn process_inbound(
         Ok(p) => p,
         Err(e) => return Err(MlsError::Stack(format!("process message: {e:?}"))),
     };
+    let sender = processed.sender().clone();
     let sender_did = processed.credential().serialized_content().to_vec();
     match processed.into_content() {
         ProcessedMessageContent::ApplicationMessage(app) => Ok(Inbound::Application {
@@ -340,9 +534,24 @@ pub fn process_inbound(
             bytes: app.into_bytes(),
         }),
         ProcessedMessageContent::StagedCommitMessage(staged) => {
-            if sender_did != steward_did.as_bytes() {
+            // Authorise the steward by LEAF, not by credential string. The
+            // group creator is permanently leaf 0 (openmls never reuses leaf 0
+            // while occupied, and a removal blanks a leaf without renumbering
+            // the others), so only the holder of leaf 0's current signing key
+            // can produce a message openmls attributes to that sender. The
+            // credential is an attacker-chosen `BasicCredential` string and is
+            // therefore unsafe to authorise on: a second leaf could carry the
+            // steward's DID and would pass a string comparison (SPEC-004
+            // ADR-303 — steward-only commits). We still bind leaf 0's
+            // credential to the authenticated steward DID as a sanity check.
+            let steward_leaf = LeafNodeIndex::new(0);
+            let is_steward_leaf = sender == Sender::Member(steward_leaf)
+                && group
+                    .member(steward_leaf)
+                    .is_some_and(|c| c.serialized_content() == steward_did.as_bytes());
+            if !is_steward_leaf {
                 return Err(MlsError::Rejected(
-                    "only the steward may commit (SPEC-004 ADR-303)".into(),
+                    "only the steward (group creator, leaf 0) may commit (SPEC-004 ADR-303)".into(),
                 ));
             }
             group
@@ -524,6 +733,51 @@ mod tests {
         assert!(
             matches!(err, Err(MlsError::Rejected(_))),
             "non-steward commit must be rejected: {err:?}"
+        );
+    }
+
+    /// SPEC-004 REQ-302/ADR-303 regression: a member whose credential string
+    /// is forged to equal the steward's DID STILL cannot commit. Authorisation
+    /// is by leaf index (the steward is permanently leaf 0), not by the
+    /// attacker-chosen credential bytes — so the impersonation is refused even
+    /// though `sender_did == steward_did` would have accepted it.
+    #[test]
+    fn forged_steward_credential_cannot_commit() {
+        let theory = "th-impersonate";
+        let alice = peer("alice", theory); // steward, leaf 0
+        let bob = peer("bob", theory);
+        let carol = peer("carol", theory);
+
+        let mut ag = create_group(&alice.provider, &alice.mls, theory).unwrap();
+
+        // Bob enrols carrying a FORGED credential whose identity bytes are
+        // Alice's DID, but signed by a distinct leaf key he controls.
+        let rogue_signer = SignatureKeyPair::new(SignatureScheme::ED25519).unwrap();
+        let rogue = MlsIdentity {
+            credential: CredentialWithKey {
+                credential: BasicCredential::new(alice.did.as_bytes().to_vec()).into(),
+                signature_key: rogue_signer.public().into(),
+            },
+            signer: rogue_signer,
+            did: alice.did.clone(),
+        };
+        let (_b, kp_bytes) = build_key_package(&bob.provider, &rogue).unwrap();
+        // The identity check passes — the credential DOES equal the claimed
+        // DID; that check alone is not enough, which is the whole point.
+        let kp = key_package_from_bytes(&alice.provider, &kp_bytes, &alice.did).unwrap();
+        let (_c, welcome) = add_member(&alice.provider, &mut ag, &alice.mls, kp).unwrap();
+        let mut bg = join_from_welcome(&bob.provider, &welcome, &alice.did).unwrap();
+
+        // Bob (leaf 1, forged "alice" credential) issues a commit.
+        let (_c2, ckp) = build_key_package(&carol.provider, &carol.mls).unwrap();
+        let ckp = key_package_from_bytes(&bob.provider, &ckp, &carol.did).unwrap();
+        let (bob_commit, _w) = add_member(&bob.provider, &mut bg, &rogue, ckp).unwrap();
+
+        // Alice's processor rejects it: the sender is leaf 1, not the steward.
+        let err = process_inbound(&alice.provider, &mut ag, &bob_commit, &alice.did);
+        assert!(
+            matches!(err, Err(MlsError::Rejected(_))),
+            "a forged-credential non-leaf-0 commit must be rejected: {err:?}"
         );
     }
 

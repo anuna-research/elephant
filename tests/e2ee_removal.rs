@@ -98,7 +98,7 @@ fn removed_member_cannot_read_after_rotation() {
     assert_eq!(opened, early, "admitted member must read pre-join history");
 
     // ── REQ-305: alice removes bob, rotates the data key
-    let _commit = e2ee::remove_member(&alice.provider, &mut ag, &alice.mls, &bob.did).unwrap();
+    let _commit = e2ee::remove_member(&alice.provider, &mut ag, &alice.mls, &bob.did, 0).unwrap();
     assert_eq!(
         e2ee::member_dids(&ag),
         vec![alice.did.clone()],

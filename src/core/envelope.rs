@@ -279,6 +279,7 @@ pub enum Quarantine {
     BadPayload(String),
     TheoryMismatch,
     WrongVersion(u16),
+    NodeMismatch,
 }
 
 impl std::fmt::Display for Quarantine {
@@ -293,6 +294,9 @@ impl std::fmt::Display for Quarantine {
             Quarantine::BadPayload(e) => write!(f, "bad payload: {e}"),
             Quarantine::TheoryMismatch => write!(f, "entry theory does not match corpus"),
             Quarantine::WrongVersion(v) => write!(f, "unsupported entry version {v}"),
+            Quarantine::NodeMismatch => {
+                write!(f, "HLC node id is not bound to the signer's key")
+            }
         }
     }
 }
@@ -501,12 +505,98 @@ pub fn validate_entry(
     if !entry.verify_sig(&pubkey) {
         return Err(Quarantine::BadSignature);
     }
+    // The HLC's node id is signed, but it must also be the one DERIVED from
+    // the signer's key (SPEC-001): otherwise a signer could stamp its entry
+    // with another node's id, forging clock lineage and colliding sentence
+    // ids allocated by that node.
+    if entry.hlc.node_id != did_crdt::core::validate::node_id_from_pubkey(pubkey.as_bytes()) {
+        return Err(Quarantine::NodeMismatch);
+    }
     let act = parse_wire(&entry.cbcl)?;
+
+    // CBCL protocol contract (REQ-022): the signed wrapper carries its own
+    // signer/key metadata. It is inside the signed bytes, but the signature
+    // only proves `entry.signer` signed *these bytes* — not that the bytes
+    // name that signer. Cross-check so a valid signature cannot smuggle CBCL
+    // that attributes the message to someone else.
+    let (w_signer, w_key, w_ts) = signed_meta(&entry.cbcl)?;
+    if w_signer != entry.signer || w_key != entry.key_id {
+        return Err(Quarantine::WrongShape(
+            "CBCL signed-wrapper signer/key disagree with the envelope".into(),
+        ));
+    }
+    // Canonical form: the stored bytes must be exactly what our serializer
+    // produces for this act and metadata — no alternate/padded encodings that
+    // parse the same but hash differently.
+    if build_wire(&act, &w_signer, &w_key, &w_ts) != entry.cbcl {
+        return Err(Quarantine::WrongShape("non-canonical CBCL encoding".into()));
+    }
+    // Receipt-id binding: an act carrying its OWN id must derive it from
+    // (theory, signer, hlc), so a receipt cannot be forged or replayed under
+    // a clock the signer never allocated (HLC / sentence-id binding).
+    let expected_id = Entry::sentence_id(&entry.theory, &entry.signer, entry.hlc);
+    let own_id = match &act {
+        SpeechAct::Assert { sentence_id, .. } | SpeechAct::Commit { sentence_id, .. } => {
+            Some(sentence_id)
+        }
+        SpeechAct::Request { request_id, .. } => Some(request_id),
+        _ => None,
+    };
+    if let Some(id) = own_id {
+        if id != &expected_id {
+            return Err(Quarantine::WrongShape(
+                "receipt id is not bound to the entry's signer and clock".into(),
+            ));
+        }
+    }
+
     // Payload-level SPL recognition for asserts (REQ-022 step 4 / CON-001):
     if let SpeechAct::Assert { spl, .. } = &act {
         validate_assert_payload(spl)?;
     }
     Ok(act)
+}
+
+/// Extract the `(signed :signer S :key K :ts T …)` metadata from an Entry's
+/// CBCL text (REQ-022). Fails closed if the wrapper is not the canonical
+/// signed form or is missing any of the three fields.
+fn signed_meta(cbcl_text: &str) -> Result<(String, String, String), Quarantine> {
+    let sexpr =
+        cbcl_parser::parse(cbcl_text).map_err(|e| Quarantine::CbclUnparseable(format!("{e:?}")))?;
+    let SExpr::List(items) = &sexpr else {
+        return Err(Quarantine::WrongShape("cbcl root must be a list".into()));
+    };
+    match items.first() {
+        Some(SExpr::Atom(Atom::Symbol(head))) if head == "signed" => {}
+        _ => {
+            return Err(Quarantine::WrongShape(
+                "outermost must be (signed …)".into(),
+            ));
+        }
+    }
+    let (mut signer, mut key, mut ts) = (None, None, None);
+    let mut i = 1;
+    while i + 1 < items.len() {
+        if let (SExpr::Atom(Atom::Keyword(k)), SExpr::Atom(Atom::Str(v))) =
+            (&items[i], &items[i + 1])
+        {
+            match k.as_str() {
+                "signer" => signer = Some(v.clone()),
+                "key" => key = Some(v.clone()),
+                "ts" => ts = Some(v.clone()),
+                _ => {}
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    match (signer, key, ts) {
+        (Some(s), Some(k), Some(t)) => Ok((s, k, t)),
+        _ => Err(Quarantine::WrongShape(
+            "(signed …) missing :signer/:key/:ts".into(),
+        )),
+    }
 }
 
 /// SPL payload restrictions (CON-001): must parse; no claims blocks
@@ -588,7 +678,10 @@ mod tests {
         Hlc {
             wall_ms: 1_752_000_000_000,
             logical: 0,
-            node_id: 42,
+            // Bound to the signer's key, as `validate_entry` now requires.
+            node_id: did_crdt::core::validate::node_id_from_pubkey(
+                test_key().verifying_key().as_bytes(),
+            ),
         }
     }
 
@@ -608,13 +701,22 @@ mod tests {
         Some(test_key().verifying_key())
     }
 
+    /// The receipt id `validate_entry` now requires an act to carry: derived
+    /// from the fixture's theory, signer, and clock.
+    fn sid() -> String {
+        Entry::sentence_id("th-test", "did:crdt:aa", hlc())
+    }
+
     /// TEST-027 (example half): serialize ∘ parse = id, and the wire
     /// roundtrips through cbcl-parser back to the same act.
     #[test]
     fn entry_roundtrip_all_performatives() {
+        // Acts that carry their own receipt id must use the bound id; acts
+        // whose id references another entry (retract/concede/justify) keep a
+        // free-form reference.
         let acts = [
             SpeechAct::Assert {
-                sentence_id: "s-1".into(),
+                sentence_id: sid(),
                 spl: "(given qa-signed)".into(),
             },
             SpeechAct::Retract {
@@ -630,19 +732,19 @@ mod tests {
                 in_reply_to: "s-9".into(),
             },
             SpeechAct::Commit {
-                sentence_id: "s-2".into(),
+                sentence_id: sid(),
                 trigger: "".into(),
                 by: Some("2026-07-18T17:00:00Z".into()),
                 goal: "legal-signed".into(),
             },
             SpeechAct::Commit {
-                sentence_id: "s-3".into(),
+                sentence_id: sid(),
                 trigger: "(and qa-signed docs-ready)".into(),
                 by: None,
                 goal: "release-ready".into(),
             },
             SpeechAct::Request {
-                request_id: "s-4".into(),
+                request_id: sid(),
                 addressee: "did:crdt:bb".into(),
                 trigger: "".into(),
                 goal: "legal-signed".into(),
@@ -699,13 +801,33 @@ mod tests {
             validate_entry(&e, "th-test", &resolver_ok),
             Err(Quarantine::BadSignature)
         );
+        // A validly-signed entry whose HLC node id is NOT the one derived from
+        // the signer's key is refused: the signature covers the node id, so
+        // this is a signer forging another node's clock lineage, not tampering.
+        let forged_hlc = Hlc {
+            node_id: 0xDEAD_BEEF,
+            ..hlc()
+        };
+        let e = Entry::create(
+            "th-test",
+            forged_hlc,
+            "did:crdt:aa",
+            "did:crdt:aa#key-0",
+            &act,
+            "2026-07-11T00:00:00Z",
+            &test_key(),
+        );
+        assert_eq!(
+            validate_entry(&e, "th-test", &resolver_ok),
+            Err(Quarantine::NodeMismatch)
+        );
     }
 
     /// TEST-022: malformed SPL in an assert payload cannot be admitted.
     #[test]
     fn bad_spl_payload_quarantined() {
         let act = SpeechAct::Assert {
-            sentence_id: "s-1".into(),
+            sentence_id: sid(),
             spl: "(given (unbalanced".into(),
         };
         let e = make(&act);
@@ -719,13 +841,49 @@ mod tests {
     #[test]
     fn inline_claims_rejected() {
         let act = SpeechAct::Assert {
-            sentence_id: "s-1".into(),
+            sentence_id: sid(),
             spl: "(claims agent:mallory (given trusted-fact))".into(),
         };
         let e = make(&act);
         assert!(matches!(
             validate_entry(&e, "th-test", &resolver_ok),
             Err(Quarantine::BadPayload(_))
+        ));
+    }
+
+    /// REQ-022 regression: a validly-signed entry whose CBCL wrapper names a
+    /// DIFFERENT signer than the envelope is quarantined. The signature proves
+    /// only that `entry.signer` signed these bytes, not that the bytes name
+    /// that signer, so the wrapper metadata must be cross-checked.
+    #[test]
+    fn cbcl_signer_disagreeing_with_envelope_is_quarantined() {
+        use ed25519_dalek::Signer as _;
+        let act = SpeechAct::Assert {
+            sentence_id: sid(),
+            spl: "(given x)".into(),
+        };
+        // Alice's envelope, but a CBCL that claims did:crdt:bb as the signer.
+        let cbcl = build_wire(
+            &act,
+            "did:crdt:bb",
+            "did:crdt:aa#key-0",
+            "2026-07-11T00:00:00Z",
+        );
+        let mut e = Entry {
+            v: ENTRY_VERSION,
+            theory: "th-test".into(),
+            hlc: hlc(),
+            signer: "did:crdt:aa".into(),
+            key_id: "did:crdt:aa#key-0".into(),
+            cbcl,
+            sig: [0u8; 64],
+        };
+        e.sig = test_key().sign(&e.signing_input()).to_bytes();
+        // The signature verifies, but the wrapper/envelope signer disagree.
+        assert!(e.verify_sig(&test_key().verifying_key()));
+        assert!(matches!(
+            validate_entry(&e, "th-test", &resolver_ok),
+            Err(Quarantine::WrongShape(m)) if m.contains("disagree with the envelope")
         ));
     }
 

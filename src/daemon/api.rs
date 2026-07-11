@@ -47,7 +47,7 @@ pub struct WatchEvent {
     pub at: String,
 }
 
-pub fn serve(paths: Paths, _ident: Identity, lock: super::DaemonLock) -> AppResult<()> {
+pub fn serve(paths: Paths, ident: Identity, lock: super::DaemonLock) -> AppResult<()> {
     let rt =
         tokio::runtime::Runtime::new().map_err(|e| AppError::Internal(format!("tokio: {e}")))?;
     rt.block_on(async move {
@@ -64,6 +64,24 @@ pub fn serve(paths: Paths, _ident: Identity, lock: super::DaemonLock) -> AppResu
             write_gate: Arc::new(Mutex::new(())),
             shutdown: Arc::new(tokio::sync::Notify::new()),
         };
+
+        // Continuous P2P sync (SPEC-002 REQ-106/107/108), opt-in via
+        // ELEPHANT_SYNC_INTERVAL. Runs as a background task tied to the same
+        // shutdown signal; an endpoint-bind failure is logged, never fatal —
+        // the loopback control plane serves regardless.
+        let sync_task = crate::p2p::sync::configured_interval().map(|interval| {
+            let paths = paths.clone();
+            let ident = Arc::new(ident);
+            // A dedicated shutdown, NOT the axum one: `notify_one` wakes a
+            // single waiter, so sharing it would race the server's own
+            // shutdown. We abort this task after the server stops.
+            let shutdown = Arc::new(tokio::sync::Notify::new());
+            tokio::spawn(async move {
+                if let Err(e) = crate::p2p::sync::run(paths, ident, shutdown, interval).await {
+                    tracing::warn!("continuous sync stopped: {e}");
+                }
+            })
+        });
 
         let app = axum::Router::new()
             .route("/v1/ping", get(ping))
@@ -103,6 +121,10 @@ pub fn serve(paths: Paths, _ident: Identity, lock: super::DaemonLock) -> AppResu
             })
             .await
             .map_err(|e| AppError::Transport(format!("serve: {e}")))?;
+        // The control plane has stopped; stop the sync engine too.
+        if let Some(task) = sync_task {
+            task.abort();
+        }
         let _ = std::fs::remove_file(paths.daemon_record());
         Ok(())
     })

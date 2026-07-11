@@ -63,7 +63,7 @@ where
         v: pake::INTRO_VERSION,
         theory_id: theory_id.to_string(),
         alias: store.meta.alias.clone(),
-        steward_did: ident.did.to_string(),
+        steward_did: ident.did.clone(),
         steward_did_doc: ident
             .document
             .to_bytes()
@@ -80,18 +80,51 @@ where
         return Err(AppError::Signature("auth-failed".into()));
     }
 
+    // 4a. Proof of possession (REQ-104): the joiner must control the private
+    //     key behind the DID it claims, and `did_doc` must be that DID's
+    //     document. Without this a joiner could enrol under any DID — the
+    //     steward's included — and later be authorised by identity string.
+    {
+        use ed25519_dalek::Verifier as _;
+        let sig_bytes: [u8; 64] = hello
+            .pop
+            .as_slice()
+            .try_into()
+            .map_err(|_| AppError::Signature("auth-failed".into()))?;
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        let msg = pop_message(theory_id, &hello.key_package);
+        let keys = crate::id::verifying_keys_for(&hello.did_doc, hello.did.as_str());
+        if !keys.iter().any(|vk| vk.verify(&msg, &sig).is_ok()) {
+            return Err(AppError::Signature("auth-failed".into()));
+        }
+    }
+
     // 5. MLS Add (steward-only commit) → Welcome; send it framed.
     let provider = crate::e2ee::open_provider(paths, theory_id)?;
     let mls_ident = crate::e2ee::MlsIdentity::for_theory(ident, theory_id);
     let mut group = crate::e2ee::load_group(&provider, theory_id)?
         .ok_or_else(|| AppError::Config("no MLS group for this theory".into()))?;
-    let kp = crate::e2ee::key_package_from_bytes(&provider, &hello.key_package, &hello.did)?;
+    // Reject a DID that is already a group member — in particular the
+    // steward's own DID. Otherwise a second leaf could carry the steward
+    // credential; duplicate identities also break the roster's key resolver
+    // (SPEC-004 REQ-302 / ADR-303).
+    if crate::e2ee::member_dids(&group)
+        .iter()
+        .any(|d| d == hello.did.as_str())
+    {
+        return Err(AppError::Signature("auth-failed".into()));
+    }
+    let kp =
+        crate::e2ee::key_package_from_bytes(&provider, &hello.key_package, hello.did.as_str())?;
     let (commit, welcome) = crate::e2ee::add_member(&provider, &mut group, &mls_ident, kp)?;
     write_frame(stream, &welcome).await?;
     // Publish the Add commit to the `mls` lane so members other than this
     // joiner advance to the new epoch when they next sync (REQ-108/REQ-306);
-    // without it they could not process a later removal commit.
+    // without it they could not process a later removal commit. `add_member`
+    // recorded the commit in the durable outbox before advancing our epoch;
+    // clear it once the publish lands (recovery republishes on crash).
     store.push_mls(&[commit])?;
+    crate::e2ee::clear_outbox(paths, theory_id)?;
 
     // 6. Keybook, encrypted to the new MLS epoch (REQ-304): grants history.
     let keybook = store
@@ -100,40 +133,71 @@ where
     let kb_msg = crate::e2ee::encrypt_app(&provider, &mut group, &mls_ident, &keybook.to_bytes())?;
     write_frame(stream, &kb_msg).await?;
 
-    // 7. Membership fact into the corpus (REQ-105) — signed, auditable, the
-    //    closure-derived roster.
+    // 7. Membership facts into the corpus (REQ-105) — signed, auditable, the
+    //    closure-derived roster. The steward's OWN transport key must be on
+    //    the roster too (REQ-107): the member's daemon admits — and dials —
+    //    only peers the closure names, so without it steward↔member
+    //    steady-state sync is refused in both directions (BUG-002). Genesis
+    //    does not record it (a solo theory has no sync peers); the first
+    //    admission adds it, deduplicated on later invites.
     store.bind_identity(ident)?;
+    let my_fact = format!(
+        "(given (member \"{}\" \"{}\"))",
+        ident.did.as_str(),
+        super::transport::node_pk(ident)
+    );
+    let have_my_fact = {
+        let (entries, _) = store.entries();
+        entries
+            .iter()
+            .filter_map(|e| crate::core::envelope::parse_wire(&e.cbcl).ok())
+            .any(|a| matches!(&a, SpeechAct::Assert { spl, .. } if *spl == my_fact))
+    };
     // HLC allocation and append under one clock guard: a concurrent
     // same-identity writer must not sign the same (wall, logical).
     let _clock = store.lock_clock()?;
     let (wall_ms, ts) = crate::cli::now_pair();
-    let hlc = store.tick(ident, wall_ms);
-    let sid = Entry::sentence_id(theory_id, ident.did.as_str(), hlc);
-    let spl = format!("(given (member \"{}\" \"{}\"))", hello.did, hello.node_pk);
-    let entry = Entry::create(
-        theory_id,
+    let mut hlc = store.tick(ident, wall_ms);
+    let mut entries = Vec::new();
+    let mut push_member_fact = |spl: String, hlc: crate::core::envelope::Hlc| {
+        let sid = Entry::sentence_id(theory_id, ident.did.as_str(), hlc);
+        entries.push(Entry::create(
+            theory_id,
+            hlc,
+            ident.did.as_str(),
+            &format!("{}#key-0", ident.did.as_str()),
+            &SpeechAct::Assert {
+                sentence_id: sid,
+                spl,
+            },
+            &ts,
+            &ident.signing_key,
+        ));
+    };
+    if !have_my_fact {
+        push_member_fact(my_fact, hlc);
+        hlc.logical += 1;
+    }
+    push_member_fact(
+        format!("(given (member \"{}\" \"{}\"))", hello.did, hello.node_pk),
         hlc,
-        ident.did.as_str(),
-        &format!("{}#key-0", ident.did.as_str()),
-        &SpeechAct::Assert {
-            sentence_id: sid,
-            spl,
-        },
-        &ts,
-        &ident.signing_key,
     );
-    store.append(&entry)?;
+    store.append_batch(&entries)?;
     drop(_clock);
 
     // Persist the joiner's DID document for offline signature verification.
+    // The filename is the DID's method-specific id (64 hex chars, enforced by
+    // the `Did` type) — never a raw, peer-chosen string (REQ-104).
     let member_dir = paths.theory_dir(theory_id).join("members");
     std::fs::create_dir_all(&member_dir)?;
-    let did_tail = hello.did.rsplit(':').next().unwrap_or(&hello.did);
-    std::fs::write(member_dir.join(format!("{did_tail}.json")), &hello.did_doc)?;
+    std::fs::write(
+        member_dir.join(format!("{}.json", hello.did.method_specific_id())),
+        &hello.did_doc,
+    )?;
 
     // 8. Corpus sync: hand over the (sealed) history.
     sync_session(stream, theory_id, store.doc()).await?;
-    Ok(hello.did)
+    Ok(hello.did.to_string())
 }
 
 /// What the joiner runs after resolving the rendezvous.
@@ -180,15 +244,24 @@ where
     let provider = crate::e2ee::open_provider(paths, &theory_id)?;
     let mls_ident = crate::e2ee::MlsIdentity::for_theory(ident, &theory_id);
     let (_bundle, key_package) = crate::e2ee::build_key_package(&provider, &mls_ident)?;
+    // Prove we control the DID we claim (REQ-104): sign the enrolment with the
+    // identity key, so the inviter can verify it against our DID document.
+    use ed25519_dalek::Signer as _;
+    let pop = ident
+        .signing_key
+        .sign(&pop_message(&theory_id, &key_package))
+        .to_bytes()
+        .to_vec();
     let hello = JoinerHello {
         v: JOINER_HELLO_VERSION,
-        did: ident.did.to_string(),
+        did: ident.did.clone(),
         did_doc: ident
             .document
             .to_bytes()
             .map_err(|e| AppError::Internal(format!("did doc: {e}")))?,
         node_pk: node_pk.to_string(),
         key_package,
+        pop,
     };
     write_frame(
         stream,
@@ -199,19 +272,24 @@ where
     // 5. MLS Welcome → join the group, verifying the steward is the DID from
     //    the authenticated introduction (REQ-302).
     let welcome = read_frame(stream).await?;
-    let mut group = crate::e2ee::join_from_welcome(&provider, &welcome, &intro.steward_did)?;
+    let mut group =
+        crate::e2ee::join_from_welcome(&provider, &welcome, intro.steward_did.as_str())?;
 
     // 6. Keybook from the MLS application message.
     let kb_msg = read_frame(stream).await?;
-    let keybook =
-        match crate::e2ee::process_inbound(&provider, &mut group, &kb_msg, &intro.steward_did)? {
-            crate::e2ee::Inbound::Application { sender_did, bytes }
-                if sender_did == intro.steward_did =>
-            {
-                crate::e2ee::keybook::Keybook::from_bytes(&bytes)?
-            }
-            _ => return Err(AppError::Signature("auth-failed".into())),
-        };
+    let keybook = match crate::e2ee::process_inbound(
+        &provider,
+        &mut group,
+        &kb_msg,
+        intro.steward_did.as_str(),
+    )? {
+        crate::e2ee::Inbound::Application { sender_did, bytes }
+            if sender_did == intro.steward_did.as_str() =>
+        {
+            crate::e2ee::keybook::Keybook::from_bytes(&bytes)?
+        }
+        _ => return Err(AppError::Signature("auth-failed".into())),
+    };
 
     // 7. Materialise the theory locally — only now do we touch the store, so
     //    a failure above leaves nothing behind.
@@ -222,7 +300,7 @@ where
         &theory_id,
         alias,
         keybook,
-        &intro.steward_did,
+        intro.steward_did.as_str(),
         &intro.steward_did_doc,
     )?;
 
@@ -238,11 +316,88 @@ pub const JOINER_HELLO_VERSION: u16 = 1;
 #[serde(deny_unknown_fields)]
 pub struct JoinerHello {
     pub v: u16,
-    pub did: String,
+    /// The joiner's DID. The `Did` type validates the `did:crdt:<64-hex>`
+    /// shape on deserialisation, so the inviter can safely use its
+    /// method-specific id as a filename (REQ-104).
+    pub did: did_crdt::Did,
     #[serde(with = "super::pake::b64v_pub")]
     pub did_doc: Vec<u8>,
     /// The joiner's transport public key, bound into the roster fact.
     pub node_pk: String,
     #[serde(with = "super::pake::b64v_pub")]
     pub key_package: Vec<u8>,
+    /// Proof of possession (REQ-104): an Ed25519 signature by the DID's
+    /// identity key over [`pop_message`]. The inviter verifies it against the
+    /// key published in `did_doc`, so a joiner cannot enrol under a DID it
+    /// does not control — in particular not the steward's.
+    #[serde(with = "super::pake::b64v_pub")]
+    pub pop: Vec<u8>,
+}
+
+/// The bytes a joiner signs to prove control of its DID (REQ-104): a domain
+/// tag, the theory id, and the KeyPackage. Binding the (single-use) KeyPackage
+/// ties the proof to this specific enrolment so it cannot be replayed onto a
+/// different one.
+fn pop_message(theory_id: &str, key_package: &[u8]) -> Vec<u8> {
+    let mut m = b"elephant-join-pop-v1\0".to_vec();
+    m.extend_from_slice(theory_id.as_bytes());
+    m.push(0);
+    m.extend_from_slice(key_package);
+    m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::Paths;
+    use ed25519_dalek::{Signer as _, Verifier as _};
+
+    fn ident(name: &str) -> (tempfile::TempDir, crate::id::Identity) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: dir.path().to_path_buf(),
+        };
+        let ident = crate::id::create(&paths, Some(name.into())).unwrap();
+        (dir, ident)
+    }
+
+    /// REQ-104: the proof of possession verifies only for the real DID holder.
+    /// Mallory presenting Alice's DID and document — but unable to sign with
+    /// Alice's key — is rejected, which is what stops steward impersonation at
+    /// admission.
+    #[test]
+    fn pop_proves_did_control() {
+        let (_da, alice) = ident("alice");
+        let (_dm, mallory) = ident("mallory");
+        let theory = "a".repeat(64);
+        let key_package = b"a-key-package".to_vec();
+        let msg = pop_message(&theory, &key_package);
+        let alice_doc = alice.document.to_bytes().unwrap();
+
+        // The keys published by Alice's document, resolved for Alice's DID.
+        let alice_keys = crate::id::verifying_keys_for(&alice_doc, alice.did.as_str());
+        assert!(!alice_keys.is_empty(), "alice's doc must publish a key");
+
+        // Alice signs with her identity key → verifies.
+        let good = alice.signing_key.sign(&msg);
+        assert!(
+            alice_keys.iter().any(|k| k.verify(&msg, &good).is_ok()),
+            "the real holder's proof must verify"
+        );
+
+        // Mallory signs the same message but presents Alice's DID/doc → the
+        // signature does not verify under any of Alice's keys.
+        let forged = mallory.signing_key.sign(&msg);
+        assert!(
+            !alice_keys.iter().any(|k| k.verify(&msg, &forged).is_ok()),
+            "a proof not signed by the DID's key must be refused"
+        );
+
+        // And a document that does not name the claimed DID resolves to no
+        // keys at all (fail closed).
+        assert!(
+            crate::id::verifying_keys_for(&alice_doc, mallory.did.as_str()).is_empty(),
+            "a mismatched DID must resolve to no verification keys"
+        );
+    }
 }

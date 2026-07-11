@@ -175,8 +175,10 @@ pub struct Introduction {
     pub v: u16,
     pub theory_id: String,
     pub alias: String,
-    /// Steward's DID and serialized DID document (offline verification).
-    pub steward_did: String,
+    /// Steward's DID and serialized DID document (offline verification). The
+    /// `Did` type validates the `did:crdt:<64-hex>` shape on deserialisation,
+    /// so a crafted identifier cannot reach a filesystem path (REQ-104).
+    pub steward_did: did_crdt::Did,
     #[serde(with = "b64v_pub")]
     pub steward_did_doc: Vec<u8>,
     /// Inviter transport address hint (iroh EndpointAddr, serialized).
@@ -229,6 +231,12 @@ pub fn open_intro(bytes: &[u8], keys: &SessionKeys) -> AppResult<Introduction> {
             intro.v
         )));
     }
+    // The steward DID is already validated by the `Did` type; the theory id
+    // is a bare string, so re-check it here at the wire boundary before the
+    // joiner uses it to build paths (SPEC-002 REQ-104).
+    if !crate::store::is_valid_theory_id(&intro.theory_id) {
+        return Err(AppError::Signature("auth-failed".into()));
+    }
     Ok(intro)
 }
 
@@ -248,6 +256,11 @@ pub(crate) mod b64v_pub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A well-formed `did:crdt` for tests: 64 hex chars from a repeated nibble.
+    fn valid_did(nibble: &str) -> did_crdt::Did {
+        format!("did:crdt:{}", nibble.repeat(64)).parse().unwrap()
+    }
 
     fn run(
         pw_a: &str,
@@ -273,9 +286,9 @@ mod tests {
 
         let intro = Introduction {
             v: INTRO_VERSION,
-            theory_id: "th-1".into(),
+            theory_id: "a".repeat(64),
             alias: "release".into(),
-            steward_did: "did:crdt:aa".into(),
+            steward_did: valid_did("b"),
             steward_did_doc: b"{}".to_vec(),
             endpoint: "node-addr".into(),
         };
@@ -311,9 +324,9 @@ mod tests {
         let (other, _) = run("zebra-zone", "zebra-zone", "th", "th").unwrap();
         let intro = Introduction {
             v: INTRO_VERSION,
-            theory_id: "th-1".into(),
+            theory_id: "a".repeat(64),
             alias: "a".into(),
-            steward_did: "did:crdt:aa".into(),
+            steward_did: valid_did("b"),
             steward_did_doc: vec![],
             endpoint: String::new(),
         };
@@ -325,6 +338,42 @@ mod tests {
         bad[n] ^= 0xff;
         assert!(open_intro(&bad, &ka).is_err(), "tampering must fail");
         assert!(open_intro(&sealed[..10], &ka).is_err(), "truncation fails");
+    }
+
+    /// REQ-104 trust boundary: a peer that puts a path-traversal string in
+    /// the DID field cannot even deserialise an Introduction — the `Did` type
+    /// rejects it before it could ever reach a filesystem path.
+    #[test]
+    fn introduction_rejects_malformed_steward_did() {
+        let j = serde_json::json!({
+            "v": 1,
+            "theory_id": "a".repeat(64),
+            "alias": "x",
+            "steward_did": "did:crdt:../../../identity/did",
+            "steward_did_doc": "e30=",
+            "endpoint": ""
+        });
+        assert!(serde_json::from_value::<Introduction>(j).is_err());
+    }
+
+    /// REQ-104: an Introduction whose theory id is a crafted path fragment is
+    /// refused by `open_intro`, so the joiner never builds a path from it.
+    #[test]
+    fn open_intro_rejects_traversal_theory_id() {
+        let (ka, kb) = run("abandon-ability", "abandon-ability", "th", "th").unwrap();
+        let intro = Introduction {
+            v: INTRO_VERSION,
+            theory_id: "../../../../etc/evil".into(),
+            alias: "x".into(),
+            steward_did: valid_did("b"),
+            steward_did_doc: vec![],
+            endpoint: String::new(),
+        };
+        let sealed = seal_intro(&intro, &ka).unwrap();
+        assert!(
+            open_intro(&sealed, &kb).is_err(),
+            "a traversal theory id must be refused at the wire boundary"
+        );
     }
 
     /// A relayed message from a third, honest run does not confirm: the

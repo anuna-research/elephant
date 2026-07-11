@@ -1,0 +1,439 @@
+//! Continuous P2P sync (SPEC-002 REQ-106/107/108): the steady-state loop that
+//! keeps already-joined members converged. The daemon serves incoming sync
+//! sessions (roster-gated) and periodically dials known roster peers.
+//!
+//! The transport-agnostic core — [`sync_as_initiator`], [`sync_as_responder`],
+//! and the [`roster_node_pks`] gate — runs over any `AsyncRead + AsyncWrite`,
+//! so it is exercised over an in-memory duplex in tests exactly as it runs
+//! over an iroh QUIC bi-stream. The iroh glue ([`handle_connection`],
+//! [`dial_once`], [`run`]) is the thin outer layer.
+
+use super::{transport, wire};
+use crate::errors::{AppError, AppResult};
+use crate::id::Identity;
+use crate::paths::Paths;
+use crate::store::TheoryStore;
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
+
+/// The transport keys the theory's roster admits (REQ-107): the `node_pk` of
+/// every closure-derived `member` fact. A sync peer is authorised iff its
+/// authenticated transport key is in this set.
+pub fn roster_node_pks(paths: &Paths, theory_id: &str) -> AppResult<HashSet<String>> {
+    let store = TheoryStore::open(paths, theory_id)?;
+    let (entries, _) = store.entries();
+    let resolve = store.key_resolver();
+    let trust = std::fs::read_to_string(paths.trust_file(theory_id)).unwrap_or_default();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let closure = crate::core::closure::close(
+        &entries,
+        theory_id,
+        crate::store::GENESIS_THEORY,
+        &resolve,
+        &trust,
+        now_ms,
+    )?;
+    let mut pks = HashSet::new();
+    for c in crate::core::closure::presentable(&closure.conclusions) {
+        if !c.conclusion_type.is_positive() || c.literal.negation {
+            continue;
+        }
+        // A member fact reads `member "<did>" "<node_pk>"` (parens stripped by
+        // to_spl's caller); take the second quoted field.
+        let spl = c.literal.to_spl();
+        let inner = spl
+            .strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or(&spl);
+        if let Some(rest) = inner.strip_prefix("member ") {
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            if let [_did, node] = fields.as_slice() {
+                pks.insert(node.trim_matches('"').to_string());
+            }
+        }
+    }
+    Ok(pks)
+}
+
+/// Drive a sync session as the INITIATOR (the dialer): open the theory, run
+/// the session, persist merged deltas under the write lock, drain the MLS
+/// lane. `theory_id` is known ahead of time.
+pub async fn sync_as_initiator<S>(
+    stream: &mut S,
+    theory_id: &str,
+    paths: &Paths,
+) -> AppResult<usize>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let store = TheoryStore::open(paths, theory_id)?;
+    let applied = wire::sync_session(stream, theory_id, store.doc()).await?;
+    store.commit_synced()?;
+    let _ = crate::e2ee::process_mls_lane(paths, &store)?;
+    Ok(applied)
+}
+
+/// Drive a sync session as the RESPONDER (the accept side): learn the theory
+/// from the peer's opening offer, enforce the roster gate against the peer's
+/// authenticated transport key (REQ-107), then complete the session. Returns
+/// the theory that was synced.
+pub async fn sync_as_responder<S>(
+    stream: &mut S,
+    peer_node_pk: &str,
+    paths: &Paths,
+) -> AppResult<String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (theory, peer_vv) = wire::read_opening_offer(stream).await?;
+    // Roster gate: the peer must be a member of the theory it asks for. A
+    // theory we do not hold locally has no roster and is refused.
+    let roster = roster_node_pks(paths, &theory)?;
+    if !roster.contains(peer_node_pk) {
+        return Err(AppError::Signature(
+            "sync refused: peer is not on this theory's roster".into(),
+        ));
+    }
+    let store = TheoryStore::open(paths, &theory)?;
+    wire::respond_sync_session(stream, &theory, store.doc(), &peer_vv).await?;
+    store.commit_synced()?;
+    let _ = crate::e2ee::process_mls_lane(paths, &store)?;
+    Ok(theory)
+}
+
+// ── iroh glue ───────────────────────────────────────────────────────────
+
+/// Serve one accepted sync connection: the roster gate keys off the QUIC
+/// connection's authenticated remote id (REQ-107 — verified before any frame
+/// is parsed for effect).
+async fn handle_connection(conn: iroh::endpoint::Connection, paths: &Paths) -> AppResult<()> {
+    let peer = conn.remote_id().to_string();
+    let (send, recv) = conn
+        .accept_bi()
+        .await
+        .map_err(|e| AppError::Transport(format!("accept sync stream: {e}")))?;
+    let mut stream = tokio::io::join(recv, send);
+    sync_as_responder(&mut stream, &peer, paths).await?;
+    Ok(())
+}
+
+/// One dial pass: for each local theory, dial every roster peer (except us)
+/// and run a session. Best-effort — a peer that is offline or unreachable is
+/// logged and skipped, never fatal.
+async fn dial_once(endpoint: &iroh::Endpoint, paths: &Paths, ident: &Identity) {
+    let me = transport::node_pk(ident);
+    let theories = match crate::store::list_theories(paths) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::debug!("sync: cannot list theories: {e}");
+            return;
+        }
+    };
+    for (meta, _) in theories {
+        let theory = meta.theory_id;
+        let roster = roster_node_pks(paths, &theory).unwrap_or_default();
+        for pk in roster {
+            if pk == me {
+                continue;
+            }
+            let Ok(peer_id) = transport::parse_node_pk(&pk) else {
+                continue;
+            };
+            match transport::dial_sync(endpoint, peer_id).await {
+                Ok(conn) => match conn.open_bi().await {
+                    Ok((send, recv)) => {
+                        let mut stream = tokio::io::join(recv, send);
+                        if let Err(e) = sync_as_initiator(&mut stream, &theory, paths).await {
+                            tracing::debug!(%theory, %pk, "sync session failed: {e}");
+                        }
+                    }
+                    Err(e) => tracing::debug!(%theory, %pk, "open sync stream: {e}"),
+                },
+                Err(e) => tracing::debug!(%theory, %pk, "dial peer: {e}"),
+            }
+        }
+    }
+}
+
+/// Run continuous sync until `shutdown` fires: bind the durable sync endpoint,
+/// accept incoming sessions forever, and dial roster peers every `interval`.
+pub async fn run(
+    paths: Paths,
+    ident: Arc<Identity>,
+    shutdown: Arc<tokio::sync::Notify>,
+    interval: Duration,
+) -> AppResult<()> {
+    let endpoint = transport::sync_endpoint(&ident).await?;
+    run_with_endpoint(endpoint, paths, ident, shutdown, interval).await
+}
+
+/// The accept + dial loops over an already-bound endpoint. Split from [`run`]
+/// so the live loopback test (tests/sync_live.rs) can drive the exact
+/// production loops over an endpoint whose peer addresses are injected
+/// instead of DHT-resolved.
+pub async fn run_with_endpoint(
+    endpoint: iroh::Endpoint,
+    paths: Paths,
+    ident: Arc<Identity>,
+    shutdown: Arc<tokio::sync::Notify>,
+    interval: Duration,
+) -> AppResult<()> {
+    tracing::info!(id = %endpoint.id(), "sync endpoint listening");
+
+    // Accept loop.
+    let accept = {
+        let endpoint = endpoint.clone();
+        let paths = paths.clone();
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => break,
+                    incoming = endpoint.accept() => {
+                        let Some(incoming) = incoming else { break };
+                        let paths = paths.clone();
+                        tokio::spawn(async move {
+                            match incoming.await {
+                                Ok(conn) => {
+                                    if let Err(e) = handle_connection(conn, &paths).await {
+                                        tracing::debug!("incoming sync failed: {e}");
+                                    }
+                                }
+                                Err(e) => tracing::debug!("incoming handshake failed: {e}"),
+                            }
+                        });
+                    }
+                }
+            }
+        })
+    };
+
+    // Dial loop.
+    loop {
+        tokio::select! {
+            _ = shutdown.notified() => break,
+            _ = tokio::time::sleep(interval) => dial_once(&endpoint, &paths, &ident).await,
+        }
+    }
+    accept.abort();
+    endpoint.close().await;
+    Ok(())
+}
+
+/// The dial interval from `ELEPHANT_SYNC_INTERVAL` (seconds). Absent, zero, or
+/// unparseable → `None` (continuous sync disabled). Live P2P sync is opt-in
+/// because it cannot be exercised in CI; see the design doc.
+pub fn configured_interval() -> Option<Duration> {
+    let raw = std::env::var("ELEPHANT_SYNC_INTERVAL").ok()?;
+    let secs: u64 = raw.trim().parse().ok()?;
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::envelope::{Entry, SpeechAct};
+    use crate::e2ee::{self, MlsIdentity};
+
+    struct Node {
+        _dir: tempfile::TempDir,
+        paths: Paths,
+        ident: Identity,
+    }
+
+    fn node(name: &str) -> Node {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: dir.path().to_path_buf(),
+        };
+        let ident = crate::id::create(&paths, Some(name.into())).unwrap();
+        Node {
+            _dir: dir,
+            paths,
+            ident,
+        }
+    }
+
+    /// Admit `m` to `steward`'s theory (the join ceremony's effect, minus the
+    /// network), recording a roster member fact with m's transport key so the
+    /// gate can find it. Returns the theory id.
+    fn admit(steward: &Node, s_store: &TheoryStore, m: &Node) -> String {
+        let theory_id = s_store.theory_id.clone();
+        let s_provider = e2ee::open_provider(&steward.paths, &theory_id).unwrap();
+        let s_mls = MlsIdentity::for_theory(&steward.ident, &theory_id);
+        let mut s_group = e2ee::load_group(&s_provider, &theory_id).unwrap().unwrap();
+        let m_provider = e2ee::open_provider(&m.paths, &theory_id).unwrap();
+        let m_mls = MlsIdentity::for_theory(&m.ident, &theory_id);
+
+        let (_b, kp) = e2ee::build_key_package(&m_provider, &m_mls).unwrap();
+        let kp = e2ee::key_package_from_bytes(&s_provider, &kp, m.ident.did.as_str()).unwrap();
+        let (commit, welcome) = e2ee::add_member(&s_provider, &mut s_group, &s_mls, kp).unwrap();
+        s_store.push_mls(&[commit]).unwrap();
+        e2ee::clear_outbox(&steward.paths, &theory_id).unwrap();
+        e2ee::join_from_welcome(&m_provider, &welcome, steward.ident.did.as_str()).unwrap();
+
+        // Roster fact naming m's transport key (what the gate checks).
+        let node_pk = transport::node_pk(&m.ident);
+        s_store.bind_identity(&steward.ident).unwrap();
+        let clock = s_store.lock_clock().unwrap();
+        let (wall_ms, ts) = crate::cli::now_pair();
+        let hlc = s_store.tick(&steward.ident, wall_ms);
+        let sid = Entry::sentence_id(&theory_id, steward.ident.did.as_str(), hlc);
+        let entry = Entry::create(
+            &theory_id,
+            hlc,
+            steward.ident.did.as_str(),
+            &format!("{}#key-0", steward.ident.did.as_str()),
+            &SpeechAct::Assert {
+                sentence_id: sid,
+                spl: format!(
+                    "(given (member \"{}\" \"{node_pk}\"))",
+                    m.ident.did.as_str()
+                ),
+            },
+            &ts,
+            &steward.ident.signing_key,
+        );
+        s_store.append(&entry).unwrap();
+        drop(clock);
+        theory_id
+    }
+
+    /// REQ-108 over a duplex: an initiator and a roster-gated responder run a
+    /// full session and both replicas converge to equal version vectors.
+    #[tokio::test]
+    async fn initiator_and_responder_converge() {
+        let alice = node("alice");
+        let a_store = TheoryStore::create(
+            &alice.paths,
+            &alice.ident,
+            "t",
+            1_784_000_000_000,
+            "2026-07-11T00:00:00Z",
+        )
+        .unwrap();
+        let bob = node("bob");
+        let theory_id = admit(&alice, &a_store, &bob);
+
+        // Bob materialises the theory (as the join ceremony would).
+        let a_snapshot = a_store.doc().export(loro::ExportMode::Snapshot).unwrap();
+        let keybook = crate::e2ee::keybook::Keybook::load(&crate::e2ee::keybook::keybook_path(
+            &alice.paths,
+            &theory_id,
+        ))
+        .unwrap()
+        .unwrap();
+        let b_store = TheoryStore::adopt(
+            &bob.paths,
+            &bob.ident,
+            &theory_id,
+            "t",
+            keybook,
+            alice.ident.did.as_str(),
+            &alice.ident.document.to_bytes().unwrap(),
+        )
+        .unwrap();
+        b_store.doc().import(&a_snapshot).unwrap();
+        b_store.flush_public().unwrap();
+
+        // Alice writes a NEW fact after bob's initial copy — only continuous
+        // sync can carry it over.
+        a_store.bind_identity(&alice.ident).unwrap();
+        let clock = a_store.lock_clock().unwrap();
+        let (wall_ms, ts) = crate::cli::now_pair();
+        let hlc = a_store.tick(&alice.ident, wall_ms);
+        let sid = Entry::sentence_id(&theory_id, alice.ident.did.as_str(), hlc);
+        a_store
+            .append(&Entry::create(
+                &theory_id,
+                hlc,
+                alice.ident.did.as_str(),
+                &format!("{}#key-0", alice.ident.did.as_str()),
+                &SpeechAct::Assert {
+                    sentence_id: sid,
+                    spl: "(given post-copy-fact)".into(),
+                },
+                &ts,
+                &alice.ident.signing_key,
+            ))
+            .unwrap();
+        drop(clock);
+
+        // Bob dials Alice; Alice responds (gated on bob's key).
+        let (mut sa, mut sb) = tokio::io::duplex(1 << 20);
+        let bob_pk = transport::node_pk(&bob.ident);
+        let a_paths = alice.paths.clone();
+        let responder =
+            tokio::spawn(async move { sync_as_responder(&mut sa, &bob_pk, &a_paths).await });
+        let b_paths = bob.paths.clone();
+        let b_theory = theory_id.clone();
+        let initiator =
+            tokio::spawn(async move { sync_as_initiator(&mut sb, &b_theory, &b_paths).await });
+        responder.await.unwrap().unwrap();
+        initiator.await.unwrap().unwrap();
+
+        // Bob now sees Alice's post-copy fact.
+        let b_store = TheoryStore::open(&bob.paths, &theory_id).unwrap();
+        let (entries, malformed) = b_store.entries();
+        assert!(
+            malformed.is_empty(),
+            "bob decrypts everything: {malformed:?}"
+        );
+        let spls: Vec<String> = entries
+            .iter()
+            .filter_map(|e| crate::core::envelope::parse_wire(&e.cbcl).ok())
+            .filter_map(|a| match a {
+                SpeechAct::Assert { spl, .. } => Some(spl),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            spls.iter().any(|s| s.contains("post-copy-fact")),
+            "continuous sync carried the post-copy fact: {spls:?}"
+        );
+    }
+
+    /// REQ-107: a peer whose transport key is not on the roster is refused
+    /// before any corpus data flows.
+    #[tokio::test]
+    async fn responder_rejects_non_member() {
+        let alice = node("alice");
+        let a_store = TheoryStore::create(
+            &alice.paths,
+            &alice.ident,
+            "t",
+            1_784_000_000_000,
+            "2026-07-11T00:00:00Z",
+        )
+        .unwrap();
+        let theory_id = a_store.theory_id.clone();
+        let mallory = node("mallory"); // never admitted
+
+        let (mut sa, mut sb) = tokio::io::duplex(1 << 20);
+        let a_paths = alice.paths.clone();
+        let mallory_pk = transport::node_pk(&mallory.ident);
+        let responder =
+            tokio::spawn(async move { sync_as_responder(&mut sa, &mallory_pk, &a_paths).await });
+        // Mallory dials as if a member.
+        let m_paths = mallory.paths.clone();
+        let m_theory = theory_id.clone();
+        // Mallory has no local store for the theory, so drive the raw offer.
+        let initiator = tokio::spawn(async move {
+            use crate::p2p::sync_dialect::SyncMsg;
+            let doc = loro::LoroDoc::new();
+            let offer = SyncMsg::Offer {
+                theory: m_theory,
+                vv: doc.oplog_vv().encode(),
+            };
+            wire::write_frame(&mut sb, offer.to_cbcl().as_bytes())
+                .await
+                .ok();
+            let _ = &m_paths;
+        });
+        let result = responder.await.unwrap();
+        initiator.await.unwrap();
+        assert!(result.is_err(), "a non-member sync must be refused");
+    }
+}
