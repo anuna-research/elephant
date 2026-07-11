@@ -16,7 +16,15 @@ use std::process::ExitCode;
     long_about = "elephant — Elephant 2000 made computable.\n\
         Agents exchange signed speech acts (assert, retract, promise, request, concede)\n\
         into shared append-only theories; conclusions, task states and commitment\n\
-        fulfilment are derived by defeasible reasoning. An elephant never forgets."
+        fulfilment are derived by defeasible reasoning. An elephant never forgets.",
+    after_help = "Examples:\n\
+        \x20 elephant id create --name alice          create your signing identity\n\
+        \x20 elephant theory create release-v1        mint a shared theory\n\
+        \x20 elephant -t release-v1 assert qa-signed  sign a statement into it\n\
+        \x20 elephant -t release-v1 promise released --by 2026-08-01T00:00:00Z\n\
+        \x20 elephant -t release-v1 status            conclusions with proof tags\n\
+        \x20 elephant -t release-v1 commitments       who promised what, and its state\n\n\
+        Docs & support: https://codeberg.org/anuna/elephant-3000"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -109,8 +117,21 @@ pub enum Command {
     #[command(name = "why-not")]
     WhyNot { literal: String },
     /// Minimal fact set that would prove the literal (alias: query require)
+    ///
+    /// Abduction: searches (bounded) for the smallest sets of facts that,
+    /// if asserted, would make the literal provable. Nothing is written —
+    /// use it to answer "what is still missing before X holds?".
+    ///
+    /// Example: elephant -t release require release-ready
     Require { literal: String },
     /// Hypothetical evaluation without asserting (alias: query what-if)
+    ///
+    /// Evaluates the goal as if the given facts were asserted, without
+    /// writing anything to the theory, and reports which conclusions would
+    /// change. The last argument is the goal; everything before it is a
+    /// hypothetical fact.
+    ///
+    /// Example: elephant -t release what-if qa-signed legal-signed release-ready
     #[command(name = "what-if")]
     WhatIf {
         /// Facts… then the goal literal (last argument)
@@ -122,6 +143,12 @@ pub enum Command {
     /// The full journal — every entry, including quarantined (REQ-016)
     Log,
     /// Stream tag changes for a literal (REQ-017)
+    ///
+    /// Prints one line whenever the literal's proof tag changes (e.g. -d →
+    /// +D), watching a running daemon when there is one and polling local
+    /// appends otherwise. Runs until interrupted with Ctrl-C.
+    ///
+    /// Example: elephant -t release watch release-ready
     Watch { literal: String },
 }
 
@@ -163,7 +190,13 @@ pub enum TheoryCmd {
     /// List members (closure-derived roster)
     Members { theory: String },
     /// Remove a member (steward only): MLS-remove + rotate the corpus key
-    Remove { theory: String, did: String },
+    Remove {
+        theory: String,
+        did: String,
+        /// Skip the confirmation prompt (required in non-interactive use)
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -400,6 +433,7 @@ struct Producer {
 }
 
 fn producer(ctx: &Ctx) -> AppResult<Producer> {
+    refuse_at_on_write(ctx, "a producer command")?;
     let theory = ctx
         .theory
         .as_deref()
@@ -678,6 +712,7 @@ pub fn now_pair() -> (u64, String) {
 fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
     match cmd {
         TheoryCmd::Create { name, template } => {
+            refuse_at_on_write(ctx, "theory create")?;
             let seed = match template.as_deref() {
                 None => Vec::new(),
                 Some("plan") => crate::tasks::plan_template(&name, &now_pair().1),
@@ -734,13 +769,63 @@ fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
             }
             Ok(())
         }
-        TheoryCmd::Invite { theory, ttl } => crate::p2p::run::invite(ctx, &theory, &ttl),
+        TheoryCmd::Invite { theory, ttl } => {
+            refuse_at_on_write(ctx, "theory invite")?;
+            crate::p2p::run::invite(ctx, &theory, &ttl)
+        }
         TheoryCmd::Join { code, alias } => {
+            refuse_at_on_write(ctx, "theory join")?;
             crate::p2p::run::join_theory(ctx, code.as_deref(), alias.as_deref())
         }
         TheoryCmd::Members { theory } => crate::p2p::run::members(ctx, &theory),
-        TheoryCmd::Remove { theory, did } => crate::p2p::run::remove_member(ctx, &theory, &did),
+        TheoryCmd::Remove { theory, did, force } => {
+            refuse_at_on_write(ctx, "theory remove")?;
+            confirm_removal(&theory, &did, force)?;
+            crate::p2p::run::remove_member(ctx, &theory, &did)
+        }
     }
+}
+
+/// Removal is irreversible — it rotates the corpus key and locks the member
+/// out of everything sealed afterwards — so confirm before acting. `--force`
+/// is the non-interactive path; a prompt is never required (clig.dev).
+fn confirm_removal(theory: &str, did: &str, force: bool) -> AppResult<()> {
+    use std::io::{IsTerminal as _, Write as _};
+    if force {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(AppError::Usage(
+            "member removal needs confirmation: pass --force in non-interactive use".into(),
+        ));
+    }
+    eprint!(
+        "remove {did} from theory '{theory}'? \
+         This rotates the corpus key and cannot be undone. [y/N] "
+    );
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| AppError::Usage(format!("could not read confirmation: {e}")))?;
+    match line.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => Ok(()),
+        _ => Err(AppError::Usage("removal cancelled".into())),
+    }
+}
+
+/// `--at` is a read-time lens (REQ-021): it evaluates the closure at a
+/// timestamp. Writes are always stamped with the current clock — silently
+/// accepting `--at` would let a user believe they backdated an entry, and
+/// the corpus is append-only, so that mistake would be permanent.
+fn refuse_at_on_write(ctx: &Ctx, what: &str) -> AppResult<()> {
+    if ctx.at.is_some() {
+        return Err(AppError::Usage(format!(
+            "--at only applies to read commands (status, log, explain, …); \
+             {what} is always stamped with the current time"
+        )));
+    }
+    Ok(())
 }
 
 fn handle_id(ctx: &Ctx, cmd: IdCmd) -> AppResult<()> {
