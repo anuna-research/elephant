@@ -8,7 +8,9 @@
 //!
 //! Wire order (each side's step numbers match):
 //! ```text
-//!   SPAKE2 msgs        (both)
+//!   J → I  SPAKE2 msg   (the joiner speaks first: over QUIC the inviter's
+//!                        accept_bi only resolves once stream data arrives)
+//!   I → J  SPAKE2 msg
 //!   confirmation MACs  (both)
 //!   I → J  sealed introduction   (theory id, steward DID doc, endpoint)
 //!   J → I  joiner hello          (DID, DID doc, node key, MLS KeyPackage)
@@ -47,10 +49,11 @@ pub async fn inviter_side<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // 1–2. SPAKE2 + key confirmation BEFORE any payload (REQ-104).
+    // 1–2. SPAKE2 + key confirmation BEFORE any payload (REQ-104). The
+    //    joiner's message comes first: it is what opens the QUIC bi-stream.
     let (hs, ours) = Handshake::start(password, spake_hint, Side::Inviter);
-    write_frame(stream, &ours).await?;
     let theirs = read_frame(stream).await?;
+    write_frame(stream, &ours).await?;
     let (keys, confirm) = hs.finish(&theirs)?;
     write_frame(stream, &confirm.ours(&keys)).await?;
     let peer_mac = read_frame(stream).await?;
@@ -221,10 +224,11 @@ pub async fn joiner_side<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // 1–2. SPAKE2 + confirmation.
+    // 1–2. SPAKE2 + confirmation. We write first: sending our SPAKE2 message
+    //    is what makes the freshly-opened bi-stream visible to the inviter.
     let (hs, ours) = Handshake::start(password, spake_hint, Side::Joiner);
-    let theirs = read_frame(stream).await?;
     write_frame(stream, &ours).await?;
+    let theirs = read_frame(stream).await?;
     let (keys, confirm) = hs.finish(&theirs)?;
     let peer_mac = read_frame(stream).await?;
     confirm.verify_peer(&keys, &peer_mac)?;

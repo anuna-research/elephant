@@ -69,7 +69,11 @@ pub async fn rendezvous_listener(invite: &super::invite::Invite) -> AppResult<En
 
 /// The joiner dials the rendezvous by its derived `EndpointId` (REQ-104).
 /// Resolution happens through the DHT; the record is only a hint.
-pub async fn dial_rendezvous(invite: &super::invite::Invite) -> AppResult<Connection> {
+///
+/// The endpoint is returned alongside the connection: dropping an iroh
+/// `Endpoint` aborts its socket, killing every connection it carries, so the
+/// caller must keep it alive for the whole ceremony and `close()` it after.
+pub async fn dial_rendezvous(invite: &super::invite::Invite) -> AppResult<(Endpoint, Connection)> {
     let target: EndpointId = rendezvous_secret(invite).public();
     // A throwaway identity for the dial: the joiner must not reveal its
     // durable transport key before SPAKE2 has authenticated the peer.
@@ -84,9 +88,11 @@ pub async fn dial_rendezvous(invite: &super::invite::Invite) -> AppResult<Connec
         .bind()
         .await
         .map_err(tx("bind dialer"))?;
-    ep.connect(target, ALPN_JOIN)
+    let conn = ep
+        .connect(target, ALPN_JOIN)
         .await
-        .map_err(tx("dial rendezvous"))
+        .map_err(tx("dial rendezvous"))?;
+    Ok((ep, conn))
 }
 
 /// The agent's durable sync endpoint (REQ-106): published continuously.

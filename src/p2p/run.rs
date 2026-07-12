@@ -142,30 +142,36 @@ pub fn join_theory(ctx: &Ctx, code: Option<&str>, alias: Option<&str>) -> AppRes
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| AppError::Internal(e.to_string()))?;
     let theory_id = rt.block_on(async move {
-        let conn = transport::dial_rendezvous(&invite).await?;
-        let (send, recv) = conn
-            .open_bi()
+        // The endpoint must outlive the ceremony: dropping it aborts the
+        // socket and the connection with it.
+        let (ep, conn) = transport::dial_rendezvous(&invite).await?;
+        let ceremony = async {
+            let (send, recv) = conn
+                .open_bi()
+                .await
+                .map_err(|e| AppError::Transport(format!("open stream: {e}")))?;
+            let mut stream = tokio::io::join(recv, send);
+            // The rendezvous only tells us where; the theory id we authenticate
+            // is the one carried in the sealed introduction. But SPAKE2 needs a
+            // hint bound into its identity — the inviter published under the
+            // routing number, so both sides use the theory id the inviter sends.
+            // We pass the routing number as the hint; the inviter must use the
+            // same. (v0.1: single-theory-per-rendezvous — see ADR note below.)
+            join::joiner_side(
+                &mut stream,
+                &ctx.paths,
+                &ident,
+                &invite.rendezvous_hint(),
+                &invite.password(),
+                &node_pk,
+                None,
+                alias,
+            )
             .await
-            .map_err(|e| AppError::Transport(format!("open stream: {e}")))?;
-        let mut stream = tokio::io::join(recv, send);
-        // The rendezvous only tells us where; the theory id we authenticate
-        // is the one carried in the sealed introduction. But SPAKE2 needs a
-        // hint bound into its identity — the inviter published under the
-        // routing number, so both sides use the theory id the inviter sends.
-        // We pass the routing number as the hint; the inviter must use the
-        // same. (v0.1: single-theory-per-rendezvous — see ADR note below.)
-        let joined = join::joiner_side(
-            &mut stream,
-            &ctx.paths,
-            &ident,
-            &invite.rendezvous_hint(),
-            &invite.password(),
-            &node_pk,
-            None,
-            alias,
-        )
-        .await?;
-        Ok::<_, AppError>(joined)
+        };
+        let joined = ceremony.await;
+        ep.close().await;
+        joined
     })?;
 
     if ctx.json {
