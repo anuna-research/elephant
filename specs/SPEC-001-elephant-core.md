@@ -1,10 +1,10 @@
 ---
 id: SPEC-001
 title: elephant — speech-act coordination on a shared defeasible theory
-version: 0.1.2
-status: implemented
+version: 0.2.0
+status: approved
 date: 2026-07-11
-last-updated: 2026-07-11
+last-updated: 2026-07-12
 audience: agent, human reviewer
 ---
 
@@ -52,7 +52,8 @@ Decisions: [[#ADR-001]] reuse `cbcl-elephant` dialect verbatim ·
 [[#ADR-002]] Loro list-of-entries corpus · [[#ADR-003]] did:crdt identity,
 keys ours · [[#ADR-006]] retraction as same-signer tombstone ·
 [[#ADR-007]] commitment states computed at the elephant layer ·
-[[#ADR-012]] provenance-from-envelope claims wrapping.
+[[#ADR-012]] provenance-from-envelope claims wrapping ·
+[[#ADR-013]] single-stratum commitment-state reflection (v0.2).
 
 Load-bearing: [[#REQ-005]] assert · [[#REQ-006]] retract ·
 [[#REQ-007]] promise · [[#REQ-015]] commitment states ·
@@ -60,7 +61,9 @@ Load-bearing: [[#REQ-005]] assert · [[#REQ-006]] retract ·
 
 Open: wire `query`/`justify` performatives unused in v0.1
 ([[#ADR-010]], owner HOC) · revocation of membership
-([[SPEC-002-elephant-p2p#ADR-104]], owner HOC).
+([[SPEC-002-elephant-p2p#ADR-104]], owner HOC) · v0.2 commitment-state
+reflection ([[#REQ-025]]–[[#REQ-027]]) specified but unimplemented
+(owner HOC).
 
 Detail: the rest of this document; P2P/daemon in [[SPEC-002-elephant-p2p]];
 user intent in [[users/operator/user]], [[users/agent/user]] and their
@@ -132,7 +135,11 @@ The CLI SHALL create a new theory on `elephant theory create <name>`:
 mint a genesis Entry (a signed `assert` of the theory's `(meta …)`
 self-description including creator DID and creation time), derive the
 theory id as `blake3(genesis-entry-canonical-bytes)`, and initialise the
-theory's [[Loro]] document in the local store.
+theory's [[Loro]] document in the local store. (v0.2) The genesis meta
+SHALL declare the theory's closure-semantics version — always
+`(closure 2)` for newly created theories (minting closure-1 theories
+is not supported: no pre-gate binary has been released to need them);
+absence means closure 1 ([[#REQ-025]] · [[#ADR-013]]).
 
 The local alias — `<name>` here, and the joiner's `--alias` or the
 steward-proposed alias at adopt time
@@ -262,7 +269,19 @@ evaluate the hypothesis non-destructively and print the goal's resulting
 status plus all newly-provable and changed conclusions, WITHOUT writing
 anything to the corpus.
 
-Trace: [[#TEST-014]]
+(v0.2) Hypothesis facts are injected into the *base* theory — commitment
+states recompute under the hypothesis, then reflection re-runs — EXCEPT
+a `commitment-state` hypothesis, which is the one lawful user-supplied
+use of the reserved predicate: it REPLACES the reflected fact for that
+commitment id in the final pass (the *recomputed* one, when base-fact
+hypotheses also changed it), letting a member probe "what if this
+promise were violated?" without contradiction against the reflected
+state ([[#REQ-025]] · [[#ADR-013]]). Edge rules: an id with no
+reflected fact (nonexistent or quarantined commit — `retracted` ones
+do reify) → exit 8; two hypotheses naming the same id → exit 1; a
+state atom outside the [[#REQ-015]] five → exit 3.
+
+Trace: [[#TEST-014]] · [[#TEST-028]]
 
 #### REQ-015: Commitment states
 
@@ -302,7 +321,19 @@ notification line each time the literal's tag changes as new Entries
 merge, until interrupted. (Transport of remote entries is
 [[SPEC-002-elephant-p2p]]; with no daemon this watches local appends.)
 
-Trace: [[#TEST-017]]
+(v0.2) On closure-2 theories, watch SHALL additionally re-evaluate at
+the deadline of every non-retracted commitment (not only currently
+`outstanding` ones — a `pending` commitment's trigger may flip before
+its deadline), so a tag change caused by pure time passage (a state
+flipping to `violated` and its consuming rules firing, [[#REQ-025]])
+is streamed without waiting for a new Entry. This wakeup set is exact
+for theories free of temporal SPL forms; boundaries of temporal
+literals (`during`, Allen relations) are NOT tracked in v0.2 — a tag
+driven by one may lag until the next merge or deadline wakeup.
+`watch --at` is a usage error (exit 1): watch observes the live
+present.
+
+Trace: [[#TEST-017]] · [[#TEST-028]]
 
 #### REQ-018: Disjoint multi-theory participation
 
@@ -343,9 +374,15 @@ An Entry SHALL be admitted to a corpus replica only if: (1) its signature
 verifies against the signer's DID key; (2) its bytes parse as canonical
 CBCL and satisfy R1–R4; (3) the inner message is a [[cbcl-elephant]]
 performative; (4) its payload parses as valid SPL (for `assert`) or has
-the declared argument shape (other performatives). Entries failing any
-check SHALL be quarantined (retained, flagged, excluded from closure,
-visible in [[#REQ-016]]) — fail closed, never repair.
+the declared argument shape (other performatives); (5) (v0.2, closure-2
+theories only) its payload satisfies the reserved-namespace position
+rule of [[#REQ-026]], the single-stratum rule of [[#REQ-027]], contains
+no inline `claims` block ([[#ADR-012]], now enforced at merge, not only
+at producer parse), and no `trusts`/`decays`/`threshold` naming the
+reserved `interpreter` source.
+Entries failing any check SHALL be quarantined (retained, flagged,
+excluded from closure, visible in [[#REQ-016]]) — fail closed, never
+repair.
 
 Trace: [[#TEST-022]] · [[#CON-002]] · LangSec principles
 
@@ -356,6 +393,8 @@ The CLI SHALL apply a per-theory local trust policy — `(trusts <source>
 agent's local configuration — to closure WITHOUT publishing them to the
 corpus; publishing trust statements INTO the corpus (as ordinary asserts)
 SHALL also be possible and affects every member's closure input.
+(v0.2, closure-2 theories: the one atom neither channel may set is the
+reserved `interpreter` source — [[#REQ-026]].)
 
 Trace: [[#TEST-023]] · [[#ADR-012]]
 
@@ -368,6 +407,77 @@ violation surfaced to the producer (5), reasoner resource exhaustion (6),
 transport/daemon error (7), not-found (8).
 
 Trace: [[#TEST-024]] · [[#CON-004]]
+
+### Commitment-state reflection (v0.2 — specified, not yet implemented)
+
+#### REQ-025: Commitment-state reflection
+
+The closure pipeline SHALL, after commitment-state evaluation
+([[#REQ-015]]), reify each commitment's state as a fact
+
+```
+(commitment-state <sentence-id> <state>)
+```
+
+(sentence-id of the `commit` Entry; state from the [[#REQ-015]] table)
+and evaluate ONE further closure pass over the base theory plus the
+reified facts — [[Stratified Negation|stratified evaluation]], never
+iterated. Conclusions reported by every consumer command
+([[#REQ-010]]–[[#REQ-014]], [[#REQ-017]]) come from this final pass.
+Commitment states themselves SHALL be computed from the base
+(first-pass) closure only: a trigger or goal literal provable only via
+reflection alters no commitment's state — fulfilment requires
+base-level evidence ([[#ADR-013]]). `explain` of a reflected fact
+itself SHALL present it as interpreter-derived (commitment id, state,
+evaluation time) — there is no rule chain to show.
+
+Reflection SHALL apply only to theories whose genesis `(meta …)`
+declares `(closure 2)` ([[#REQ-003]]); a theory without the declaration
+keeps v0.1 closure semantics unchanged, and a replica encountering a
+declared closure version it does not implement SHALL refuse to open or
+evaluate that theory (exit 2, fail closed) — this is what keeps
+[[#REQ-021]]'s "any replica" clause true under version skew, among
+gate-implementing replicas ([[#ADR-013]] scopes the guarantee).
+
+Trace: [[#TEST-028]] · [[#TEST-021]] · [[#ADR-013]] · [[#CON-003]]
+
+#### REQ-026: Reserved reflection namespace
+
+On closure-2 theories ([[#REQ-003]]; closure-1 theories keep v0.1
+semantics, where the predicate is ordinary), `commitment-state` SHALL
+be a reserved predicate admitted in exactly ONE position of
+user-supplied SPL: as a positive body literal — a direct conjunct of
+the antecedent — of a rule or defeater. EVERY other occurrence — a
+bare or `given` fact, any head position (rule or defeater), any
+negated form, any modal or temporal wrapping, any metadata/annotation
+position, or nested as a term argument of another predicate — SHALL be
+refused after full recognition, before signing or storing (exit 3), by
+every producer command; a wire Entry violating the same rule SHALL be
+quarantined at merge ([[#REQ-022]] check 5).
+Consuming states is the feature; minting, negating, or attacking them
+is forbidden — a whitelist, per LangSec: reject what the grammar of
+admissible positions does not expressly allow. The `interpreter` source
+atom is reserved likewise: corpus-published `trusts`/`decays`/
+`threshold` statements naming it SHALL be refused/quarantined the same
+way, and the pipeline-supplied `(trusts interpreter 1.0)` SHALL
+override any local-config statement naming it ([[#ADR-013]]).
+
+Trace: [[#TEST-029]] · [[#ADR-013]] · [[#CON-001]] · [[#REQ-022]]
+
+#### REQ-027: Single stratum
+
+On closure-2 theories (closure-1 keeps v0.1 semantics, as in
+[[#REQ-026]]), `elephant promise` and `elephant request` SHALL reject
+before signing (exit 3) a trigger or goal that references any
+`commitment-state` literal, and a wire `commit` or `request` Entry
+whose trigger or goal references the namespace SHALL be quarantined at
+merge ([[#REQ-022]] check 5). A quarantined `commit` is not a commitment: it is excluded
+from [[#REQ-015]] listing and appears only in the journal
+([[#REQ-016]]) with its reason. Commitments about other commitments'
+states are out of scope for v0.2 ([[#ADR-013]] records the upgrade
+path).
+
+Trace: [[#TEST-030]] · [[#ADR-013]] · [[#REQ-022]]
 
 ### Non-functional requirements
 
@@ -501,7 +611,10 @@ meets its specifications."
 **Trade-offs.** (+) states are exact, testable, and cannot destabilise
 the theory. (−) commitment states are not themselves literals other
 rules can consume in v0.1; if plans need to react to `violated`, agents
-assert observed states back into the theory explicitly.
+assert observed states back into the theory explicitly. *The (−) is
+superseded in v0.2 by [[#ADR-013]]: states are reflected into a single
+second closure pass as consumable facts. The decision itself stands —
+state evaluation stays in Rust, never as synthetic SPL rules.*
 
 #### ADR-010: Wire `query` and `justify` performatives are parsed but not emitted in v0.1
 
@@ -536,6 +649,111 @@ Deriving the claims wrapper from the verified envelope means provenance
 can't be spoofed below the signature layer, and every admitted statement
 has a source (so trust math is total).
 
+#### ADR-013: Commitment states reflected into a single second closure pass (v0.2)
+
+**Decision.** Supersedes the "(−)" trade-off of [[#ADR-007]] — from
+v0.2, commitment states are consumable by rules. After stage-8 state
+evaluation, each state is reified as `(commitment-state <sentence-id>
+<state>)`, wrapped in a `(claims interpreter :at <t>)` block with a
+fixed, locally-supplied `(trusts interpreter 1.0)`, and stages 6–7
+re-run exactly once over the parsed base theory extended with the
+parsed reified facts ([[#CON-003]] stage 9). Reported conclusions come from this final pass; reported
+commitment states come from the base pass. [[#ADR-007]]'s core decision
+stands: no [[Negation-as-Failure|negation-as-failure]] enters the
+theory — the state table is still evaluated in Rust; only its verdicts
+are fed back as ordinary facts.
+
+**Context.** Plans need to react to a violated or fulfilled promise
+(escalation, re-planning). The v0.1 workaround — agents asserting
+observed states — makes the most basic deontic reaction depend on an
+observer daemon being up, opens a replica-disagreement window until the
+observation syncs, and *decrees* into the corpus what the system's
+pitch says should be *derived*. States are already a deterministic pure
+function of (corpus, evaluation time), so feeding them back as inputs
+is [[Stratified Negation|stratified evaluation]], not self-reference:
+the "not provable" question is answered at stratum 0, frozen into
+facts, and stratum 1 consumes the answer without being able to
+influence it. [[#REQ-021]] convergence is preserved — final-pass
+conclusions at time t remain a pure function of (corpus, trust, t).
+
+**Why exactly one stratum.** The ingest-time bans ([[#REQ-026]],
+[[#REQ-027]]) make the stratification structural rather than checked
+per evaluation: no fixpoint iteration, no cycle detector, no
+termination argument, no new member-triggerable closure pathology
+surface (cf. [[BUG-001]]). Lifting an ingest ban later is a
+backwards-compatible relaxation; shipping fixpoint semantics now is
+complexity that could never be removed. The reified facts never cross
+the wire — every replica re-derives them identically — so they carry
+the one non-cryptographic source [[#ADR-012]] admits: deterministic
+re-derivation is not testimony.
+
+**The `interpreter` source is reserved and cannot collide.** Member
+source atoms are full DIDs (the 0.1.1 widening), so no signer can *be*
+`interpreter`; what a member could do is publish `(trusts interpreter
+0.0)` into the corpus ([[#REQ-023]]) and mute every reflected fact on
+every replica — a violator silencing the reaction to their own
+violation. Hence [[#REQ-026]] reserves the atom in published trust,
+and the pipeline-supplied `(trusts interpreter 1.0)` overrides local
+config: the reflection trust anchor is a constant of the semantics,
+not an opinion. Inline `(claims …)` spoofing is closed on both paths:
+ADR-012 rejects it at producer parse time, and [[#REQ-022]] check 5
+quarantines wire-crafted payloads carrying inline claims blocks —
+producer-side rejection alone would leave the reserved 1.0 anchor as
+the highest-value wire forgery.
+
+**Version skew is gated at the theory, fail closed — among replicas
+that implement the gate.** A v0.1 closure admits SPL this ADR
+quarantines; two binary versions over one corpus would derive different
+conclusions, violating [[#REQ-021]]'s "any replica" clause. So
+reflection and the [[#REQ-022]] check 5 activate only for theories
+whose signed genesis meta declares `(closure 2)` ([[#REQ-003]],
+[[#REQ-025]]) — the declaration is inside the bytes the theory id is
+derived from, so it cannot be retrofitted or forked silently — and a
+replica that does not implement a theory's declared closure version
+refuses to open it (exit 2). The gate is one-directional: a binary
+predating it contains no version check and would evaluate a closure-2
+theory with v0.1 semantics. That skew is accepted for v0.2 because no
+0.1.x binary has been released — the gate is binding from the first
+release onward; a closure-version floor in the SPEC-002 join handshake
+is the recorded upgrade path if pre-gate binaries ever circulate
+(owner HOC). Undeclared theories keep v0.1 semantics forever;
+upgrading one means creating a closure-2 successor theory (membership
+carries over by re-join; corpus migration is out of scope for v0.2).
+
+**Fulfilment is base-evidence-only.** A rule consuming one commitment's
+state can make *another* commitment's trigger or goal provable in the
+final pass ([[#REQ-027]] bans only direct reference). If states were
+read from the final pass, states would depend on states — the cycle the
+single stratum exists to exclude. So [[#REQ-025]] fixes: state
+evaluation reads base-pass tags only. A promise is discharged by signed
+evidence in the corpus, never by a conclusion that exists only because
+some other promise's verdict was reflected. The observable consequence
+is deliberate and documented: `status` can show a reflection-derived
+literal `+d` while a commitment with that literal as goal stays
+`outstanding` — `explain` names the reflected premise, making the
+stratum visible.
+
+**Violated is curable.** The [[#REQ-015]] table is unchanged: a goal
+proven after the deadline reads `fulfilled`, and final-pass conclusions
+that fired off `violated` retract — the defeasible reading (late
+delivery cures the escalation). "Was violated at t" stays answerable
+via `--at <t>` ([[#ADR-011]]) and the journal ([[#REQ-016]]); a
+monotone `commitment-violated-at` reification is deferred until a REQ
+demands irreversible consequences (rung 1, YAGNI).
+
+**Trade-offs.** (+) reactions to promise outcomes are derived, offline,
+deterministic — no observer agent, no lag, no decree. (+) zero new
+logic semantics: spindle is unchanged; elephant feeds it one more pass.
+(−) closure cost approaches ×2 if stage 9 naively re-assembles and
+re-parses; the [[#NFR-001]] 250 ms budget now covers both passes
+(v0.1 bench: ~131 ms at 1 k entries), so the implementation MUST reuse
+the parsed base theory and append only the reified facts —
+[[#TEST-025]] gates this. (−) commitments about commitments are
+rejected, not supported ([[#REQ-027]]); upgrade path: stratification
+check over the commitment dependency graph, then bounded fixpoint.
+(−) the base/final split is a second closure surface to explain;
+mitigated by `explain` showing reflected premises.
+
 ## 4. Contracts
 
 #### CON-001: SPL payload grammar
@@ -547,12 +765,18 @@ S-expression). Recogniser: `spindle_parser::parse_spl` — the single
 parser for this language in the binary (one parser per language).
 Restrictions on top of SPL, enforced after parse: no `claims` blocks
 ([[#ADR-012]]); no `trusts`/`decays`/`threshold` unless the command is
-explicitly publishing trust ([[#REQ-023]]).
+explicitly publishing trust ([[#REQ-023]]); `commitment-state` only as
+a positive top-level rule/defeater body literal, never in promise or
+request triggers/goals, and no published trust naming `interpreter`
+([[#REQ-026]], [[#REQ-027]]; v0.2 — sole exception: a what-if
+hypothesis per [[#REQ-014]]).
 Pre: UTF-8 argument ≤ 64 KiB. Post: a validated `Theory` fragment or a
 parse error naming the offending form; nothing signed or stored on error.
 Error model: exit 3, JSON `{error: "parse", detail…}`.
-Implements: [[#REQ-005]] [[#REQ-007]] [[#REQ-008]] [[#REQ-014]].
-Verified by: [[#TEST-005]] [[#TEST-026]] (fuzz).
+Implements: [[#REQ-005]] [[#REQ-007]] [[#REQ-008]] [[#REQ-014]]
+[[#REQ-026]] [[#REQ-027]].
+Verified by: [[#TEST-005]] [[#TEST-026]] (fuzz) [[#TEST-029]]
+[[#TEST-030]].
 
 #### CON-002: Entry — the corpus element
 
@@ -593,14 +817,23 @@ closure(entries: &[Entry], trust: &TrustPolicy, now: TimePoint)
 
 Stages, in order, all deterministic: 1 verify signature + DID binding →
 2 parse CBCL (`cbcl_parser::run_pipeline`-equivalent, dialect check
-against pinned `cbcl-elephant` hash) → 3 E1 tombstone filter (`retract`)
+against pinned `cbcl-elephant` hash; on closure-2 theories also the
+payload-restriction scan of [[#REQ-022]] check 5, so `closure()`
+re-derives the full quarantine verdict from `&[Entry]` alone)
+→ 3 E1 tombstone filter (`retract`)
 → 4 build SPL text: for each admitted `assert`, a claims block per
 [[#ADR-012]]; plus local trust statements → 5 `parse_spl` → 6 spindle
 `reason` with `reference_time = now` → 7 `compute_weighted_conclusions`
-→ 8 commitment-state evaluation ([[#REQ-015]]).
+→ 8 commitment-state evaluation ([[#REQ-015]]) → 9 (v0.2, closure-2
+theories) reflection: reify stage-8 states per [[#REQ-025]] with
+interpreter claims + fixed trust, re-run 6–7 once over the *parsed*
+base theory extended with the parsed reified facts (no re-assembly, no
+re-parse of the base — [[#NFR-001]] covers both passes); final
+conclusions come from this pass, commitment states remain stage 8's
+([[#ADR-013]]).
 The function does no I/O; `now` is a parameter (never `SystemTime::now`
 inside), which is what makes [[#REQ-021]] testable.
-Implements: [[#REQ-010]]–[[#REQ-016]] [[#REQ-021]].
+Implements: [[#REQ-010]]–[[#REQ-016]] [[#REQ-021]] [[#REQ-025]].
 Verified by: [[#TEST-021]] [[#TEST-010]]–[[#TEST-016]].
 
 #### CON-004: CLI JSON contract
@@ -612,9 +845,10 @@ Stable shapes (v1): every success object carries `"v": 1` and the
 // assert / promise / request / concede / retract
 { "v":1, "receipt":"s-3b8a9c1d0e2f4a6b", "theory":"…", "signer":"did:crdt:…",
   "performative":"assert", "spl_form":"given" }
-// status (array elements)
+// status (array elements); v0.2: a reflection-derived conclusion
+// carries "interpreter" among its sources
 { "literal":"release-ready", "tag":"+d", "degree":0.9,
-  "above_threshold":true, "sources":["agent:qa-bot"] }
+  "above_threshold":true, "sources":["did:crdt:…"] }
 // commitments (array elements)
 { "id":"s-…", "by":"did:crdt:…", "trigger":"true", "goal":"legal-signed",
   "deadline":"2026-07-18T17:00:00Z", "state":"outstanding" }
@@ -681,10 +915,10 @@ negative-output per REQ) and adversarial pass before `implemented`.
 | TEST-011 | REQ-011 | explain shows rule chain+source | unknown literal → clean message | — |
 | TEST-012 | REQ-012 | why-not lists missing premises | — | omits firing defeater → fail |
 | TEST-013 | REQ-013 | require returns minimal set | — | non-minimal/incorrect set → fail |
-| TEST-014 | REQ-014 | what-if flips goal, corpus unchanged | — | corpus mutated → fail |
+| TEST-014 | REQ-014 | what-if flips goal, corpus unchanged; (v0.2) state hypothesis replaces the reflected fact | (v0.2) unknown commitment id → exit 8; duplicate id hypotheses → exit 1; non-table state atom → exit 3 | corpus mutated → fail |
 | TEST-015 | REQ-015 | full state table walk (5 states) | — | fulfilled regresses by clock → fail |
 | TEST-016 | REQ-016 | log shows all incl. quarantined+why | — | hides retracted → fail |
-| TEST-017 | REQ-017 | watch fires on local append tag flip | — | fires w/o tag change → fail |
+| TEST-017 | REQ-017 | watch fires on local append tag flip; (v0.2) fires at a pending commitment's deadline with no new entry | (v0.2) `watch --at` → exit 1 | fires w/o tag change → fail |
 | TEST-018 | REQ-018 | two theories, same literal names, independent closures | — | cross-leak → fail |
 | TEST-019 | REQ-019 | every command --json parses & matches CON-004 | — | schema drift → fail |
 | TEST-020 | REQ-020 | asserts succeed with store-only mode | — | network touched → fail (no net in unit env) |
@@ -695,6 +929,9 @@ negative-output per REQ) and adversarial pass before `implemented`.
 | TEST-025 | NFR-001/2/3 | criterion bench 1k/10k entries | — | p95 over budget → fail |
 | TEST-026 | CON-001/002 | cargo-fuzz targets: entry JSON, SPL arg | crashes/hangs → fail | — |
 | TEST-027 | CON-002 | property: serialize∘parse = id on Entries | — | — |
+| TEST-028 | REQ-025 | rule over `(commitment-state s violated)` fires once deadline passes (`--at`); retracts when late delivery cures | theory declaring unimplemented closure version → exit 2, not evaluated | reflected fact disagrees with `commitments` listing at same t → fail; goal provable only via reflection changes a state → fail |
+| TEST-029 | REQ-026, REQ-022(5) | rule/defeater *body* consuming a state admitted | fact, rule/defeater head, negated, modal/temporal-wrapped, annotation-position, or term-nested `commitment-state` → exit 3, corpus+0; published trust naming `interpreter` → exit 3; wire-crafted equivalents incl. inline `(claims interpreter …)` payload → quarantined (closure-2 theory); same payloads admitted unchanged on a closure-1 theory | spoofed state or muted interpreter influences closure → fail |
+| TEST-030 | REQ-027 | ordinary promise and request accepted unchanged | promise or request trigger/goal naming `commitment-state` → exit 3; wire `commit`/`request` ditto → quarantined, commit absent from `commitments`, journalled with reason | — |
 
 ## 7. Observability
 
@@ -719,6 +956,32 @@ audited crates; no novel constructions (no-go area respected).
 
 <details>
 <summary>Revision history</summary>
+
+- 0.2.0 (draft) — commitment-state reflection: one further closure pass
+  consumes reified `(commitment-state <id> <state>)` facts so rules can
+  react to promise outcomes ([[#REQ-025]]); reserved-namespace
+  integrity — consuming states is allowed, minting them is rejected at
+  parse and quarantined at merge ([[#REQ-026]]); single-stratum
+  restriction on promise triggers/goals ([[#REQ-027]]); [[#ADR-013]]
+  supersedes the ADR-007 consumability trade-off (fulfilment stays
+  base-evidence-only; violated stays curable). Hardened by adversarial
+  review round 1: reserved namespace defined positionally over SPL's
+  full form inventory (negation/defeaters/modals/nesting closed);
+  `interpreter` source atom reserved against published-trust muting;
+  version skew gated by a genesis-declared `(closure 2)`, fail closed
+  ([[#REQ-003]]); merge-time check 5 added to [[#REQ-022]]; what-if
+  stratum semantics fixed ([[#REQ-014]]); watch re-evaluates at
+  outstanding deadlines ([[#REQ-017]]); request symmetry ([[#REQ-027]]).
+  Round 2: skew guarantee scoped honestly (gate binds only
+  gate-implementing binaries; join-handshake floor is the upgrade
+  path); wire-crafted inline `claims` blocks quarantined by check 5
+  (closing the `interpreter`-anchor forgery ADR-012's producer-side
+  rejection missed); watch wakeup widened to all non-retracted
+  deadlines and scoped against temporal SPL forms; what-if edge rules
+  (unknown id, duplicate ids, non-table atom); producer rejections
+  closure-2-conditional. Specified only — the 0.1.2 surface remains
+  implemented and unchanged; status returns to `implemented` when
+  TEST-028–030 are green.
 
 - 0.1.2 — theory aliases get a declared grammar ([[#REQ-003]]): LDH
   labels, 1–63 octets, lowercase-only, RFC 1035/1123/6335-grounded;
