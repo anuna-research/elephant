@@ -91,7 +91,7 @@ pub fn invite(ctx: &Ctx, theory: &str, ttl: &str) -> AppResult<()> {
             // (a stray probe, an aborted dial) is not an attempt and must not
             // consume it: re-accept until the TTL. Once the joiner's stream
             // is open the single ceremony run is final, pass or fail.
-            let (send, recv) = loop {
+            let (conn, send, recv) = loop {
                 let incoming = listener.accept().await.ok_or_else(|| {
                     AppError::Transport("rendezvous closed before a joiner arrived".into())
                 })?;
@@ -107,7 +107,7 @@ pub fn invite(ctx: &Ctx, theory: &str, ttl: &str) -> AppResult<()> {
                 match tokio::time::timeout(std::time::Duration::from_secs(10), conn.accept_bi())
                     .await
                 {
-                    Ok(Ok(bi)) => break bi,
+                    Ok(Ok((send, recv))) => break (conn, send, recv),
                     Ok(Err(e)) => {
                         tracing::debug!(err = %e, "inviter: no stream from peer; re-accepting");
                     }
@@ -118,7 +118,7 @@ pub fn invite(ctx: &Ctx, theory: &str, ttl: &str) -> AppResult<()> {
                 }
             };
             let mut stream = tokio::io::join(recv, send);
-            join::inviter_side(
+            let did = join::inviter_side(
                 &mut stream,
                 &ctx.paths,
                 &ident,
@@ -127,18 +127,34 @@ pub fn invite(ctx: &Ctx, theory: &str, ttl: &str) -> AppResult<()> {
                 &password,
                 &endpoint_hint,
             )
-            .await
+            .await?;
+            Ok::<_, AppError>((did, conn))
         };
-        // Close the listener endpoint on every path — including a ceremony
-        // error — or the drop aborts the socket ungracefully.
         let outcome = tokio::time::timeout(ttl, ceremony).await;
-        listener.close().await;
-        match outcome {
-            Ok(result) => result,
+        let result = match outcome {
+            Ok(Ok((did, conn))) => {
+                // Our side of the ceremony ends on a read, so our final sync
+                // deliver — the whole corpus — may still be in flight. Closing
+                // now aborts it and the joiner sees "connection lost" after an
+                // otherwise-complete join (it only ever loses over a real
+                // network RTT, never on localhost). The joiner closes the
+                // connection once it has drained everything; wait for that.
+                let drained =
+                    tokio::time::timeout(std::time::Duration::from_secs(30), conn.closed()).await;
+                if drained.is_err() {
+                    tracing::debug!("inviter: joiner did not close within 30s; closing anyway");
+                }
+                Ok(did)
+            }
+            Ok(Err(e)) => Err(e),
             Err(_) => Err(AppError::Transport(
                 "invite expired before a joiner completed the handshake".into(),
             )),
-        }
+        };
+        // Close the listener endpoint on every path — including a ceremony
+        // error — or the drop aborts the socket ungracefully.
+        listener.close().await;
+        result
     })
     .map(|did| {
         if !ctx.json {
@@ -190,6 +206,12 @@ pub fn join_theory(ctx: &Ctx, code: Option<&str>, alias: Option<&str>) -> AppRes
             .await
         };
         let joined = ceremony.await;
+        if joined.is_ok() {
+            // Our final read consumed the inviter's last frame, so nothing of
+            // ours is still in flight that matters: closing here is the
+            // "everything drained" signal the waiting inviter unblocks on.
+            conn.close(0u8.into(), b"done");
+        }
         ep.close().await;
         joined
     })?;

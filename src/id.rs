@@ -180,24 +180,42 @@ pub fn verifying_keys_for(
     doc_bytes: &[u8],
     expected_did: &str,
 ) -> Vec<ed25519_dalek::VerifyingKey> {
-    let Ok(document) = Document::from_bytes(doc_bytes) else {
-        return Vec::new();
+    // Each bail is traced: with fail-closed semantics, "0 keys" alone cannot
+    // tell a stale peer build from a forged document (SPEC-002 REQ-111 gives
+    // the local operator the full reason).
+    let document = match Document::from_bytes(doc_bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::debug!(err = %e, len = doc_bytes.len(), "did doc: deserialize failed");
+            return Vec::new();
+        }
     };
-    let Ok(resolved) = document.resolve() else {
-        return Vec::new();
+    let resolved = match document.resolve() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(err = %e, "did doc: resolve failed");
+            return Vec::new();
+        }
     };
     let Some(dd) = resolved.did_document else {
+        tracing::debug!("did doc: resolved to no document (deactivated?)");
         return Vec::new();
     };
     if dd.id != expected_did {
+        tracing::debug!(doc_id = %dd.id, expected = %expected_did, "did doc: id mismatch");
         return Vec::new();
     }
     let mut keys = Vec::new();
     for vm in &dd.verification_method {
         let Some(b64) = vm.public_key_multibase.strip_prefix('u') else {
+            tracing::debug!(
+                multibase_prefix = ?vm.public_key_multibase.chars().next(),
+                "did doc: skipping verification method with unexpected multibase"
+            );
             continue;
         };
         let Ok(bytes) = Base64UrlUnpadded::decode_vec(b64) else {
+            tracing::debug!("did doc: skipping undecodable verification method");
             continue;
         };
         if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
