@@ -264,6 +264,25 @@ where
     }
     let theory_id = intro.theory_id.clone();
 
+    // A previous join of this theory that died before the corpus sync
+    // completed leaves an adopted shell: MLS group and keybook on disk but
+    // zero corpus entries (the sync is the ceremony's final step, and no
+    // create or completed join produces an entry-less replica — the theory id
+    // is the hash of its genesis entry). Re-joining must not trip over that
+    // wreckage (GroupAlreadyExists): clear the shell and adopt fresh. A
+    // replica that holds entries — or that cannot be read at all — is never
+    // touched. Doing this before the hello also spares the inviter a doomed
+    // MLS add.
+    let dir = paths.theory_dir(&theory_id);
+    if dir.exists()
+        && TheoryStore::open(paths, &theory_id)
+            .map(|s| s.entries().0.is_empty())
+            .unwrap_or(false)
+    {
+        tracing::debug!(theory = %theory_id, "joiner: clearing half-joined shell (no corpus entries)");
+        std::fs::remove_dir_all(&dir)?;
+    }
+
     // 4. Now that we know the theory, derive the leaf key and offer a
     //    KeyPackage bound to our DID.
     let provider = crate::e2ee::open_provider(paths, &theory_id)?;
