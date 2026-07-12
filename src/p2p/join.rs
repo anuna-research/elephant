@@ -51,13 +51,18 @@ where
 {
     // 1–2. SPAKE2 + key confirmation BEFORE any payload (REQ-104). The
     //    joiner's message comes first: it is what opens the QUIC bi-stream.
+    // Step tracing is local-only diagnostics: the remote peer still sees
+    // every failure as the opaque `auth-failed` (REQ-104).
     let (hs, ours) = Handshake::start(password, spake_hint, Side::Inviter);
     let theirs = read_frame(stream).await?;
+    tracing::debug!(len = theirs.len(), "inviter: joiner SPAKE2 msg received");
     write_frame(stream, &ours).await?;
     let (keys, confirm) = hs.finish(&theirs)?;
+    tracing::debug!("inviter: SPAKE2 finished");
     write_frame(stream, &confirm.ours(&keys)).await?;
     let peer_mac = read_frame(stream).await?;
     confirm.verify_peer(&keys, &peer_mac)?;
+    tracing::debug!("inviter: key confirmation verified");
 
     // 3. Sealed introduction — the joiner learns the theory id (and can now
     //    derive its per-theory MLS leaf key).
@@ -74,12 +79,15 @@ where
         endpoint: endpoint_hint.to_string(),
     };
     write_frame(stream, &pake::seal_intro(&intro, &keys)?).await?;
+    tracing::debug!("inviter: sealed introduction sent");
 
     // 4. Joiner hello: DID + MLS KeyPackage (built for this theory).
     let hello = read_frame(stream).await?;
     let hello: JoinerHello = serde_json::from_slice(&hello)
         .map_err(|e| AppError::Transport(format!("bad joiner hello: {e}")))?;
+    tracing::debug!(did = %hello.did, v = hello.v, "inviter: joiner hello received");
     if hello.v != JOINER_HELLO_VERSION {
+        tracing::debug!("inviter: joiner hello version mismatch");
         return Err(AppError::Signature("auth-failed".into()));
     }
 
@@ -98,8 +106,15 @@ where
         let msg = pop_message(theory_id, &hello.key_package);
         let keys = crate::id::verifying_keys_for(&hello.did_doc, hello.did.as_str());
         if !keys.iter().any(|vk| vk.verify(&msg, &sig).is_ok()) {
+            // Distinguish "the doc resolved no keys" (format or library skew)
+            // from "keys resolved but the signature does not verify".
+            tracing::debug!(
+                resolved_keys = keys.len(),
+                "inviter: proof-of-possession failed"
+            );
             return Err(AppError::Signature("auth-failed".into()));
         }
+        tracing::debug!("inviter: proof-of-possession verified");
     }
 
     // 5. MLS Add (steward-only commit) → Welcome; send it framed.
@@ -115,12 +130,14 @@ where
         .iter()
         .any(|d| d == hello.did.as_str())
     {
+        tracing::debug!("inviter: DID is already a group member");
         return Err(AppError::Signature("auth-failed".into()));
     }
     let kp =
         crate::e2ee::key_package_from_bytes(&provider, &hello.key_package, hello.did.as_str())?;
     let (commit, welcome) = crate::e2ee::add_member(&provider, &mut group, &mls_ident, kp)?;
     write_frame(stream, &welcome).await?;
+    tracing::debug!("inviter: MLS welcome sent");
     // Publish the Add commit to the `mls` lane so members other than this
     // joiner advance to the new epoch when they next sync (REQ-108/REQ-306);
     // without it they could not process a later removal commit. `add_member`
@@ -199,6 +216,7 @@ where
     )?;
 
     // 8. Corpus sync: hand over the (sealed) history.
+    tracing::debug!("inviter: starting corpus sync");
     sync_session(stream, theory_id, store.doc()).await?;
     Ok(hello.did.to_string())
 }
@@ -229,13 +247,16 @@ where
     let (hs, ours) = Handshake::start(password, spake_hint, Side::Joiner);
     write_frame(stream, &ours).await?;
     let theirs = read_frame(stream).await?;
+    tracing::debug!(len = theirs.len(), "joiner: inviter SPAKE2 msg received");
     let (keys, confirm) = hs.finish(&theirs)?;
     let peer_mac = read_frame(stream).await?;
     confirm.verify_peer(&keys, &peer_mac)?;
     write_frame(stream, &confirm.ours(&keys)).await?;
+    tracing::debug!("joiner: key confirmation verified");
 
     // 3. Sealed introduction → learn the theory id and steward DID.
     let intro = pake::open_intro(&read_frame(stream).await?, &keys)?;
+    tracing::debug!(theory = %intro.theory_id, "joiner: sealed introduction opened");
     if let Some(want) = expected_theory {
         if want != intro.theory_id {
             return Err(AppError::Signature("auth-failed".into()));

@@ -88,11 +88,21 @@ pub async fn dial_rendezvous(invite: &super::invite::Invite) -> AppResult<(Endpo
         .bind()
         .await
         .map_err(tx("bind dialer"))?;
-    let conn = ep
-        .connect(target, ALPN_JOIN)
-        .await
-        .map_err(tx("dial rendezvous"))?;
-    Ok((ep, conn))
+    match ep.connect(target, ALPN_JOIN).await {
+        Ok(conn) => Ok((ep, conn)),
+        Err(e) => {
+            // Close before returning: dropping an endpoint aborts its socket.
+            ep.close().await;
+            // The rendezvous record outlives the invite (pkarr records are
+            // not torn down), so a dial against a finished invite resolves an
+            // address and then times out — tell the operator what that means.
+            Err(AppError::Transport(format!(
+                "dial rendezvous: {e}; no inviter reachable behind this code — \
+                 check `theory invite` is still waiting on their machine \
+                 (invites expire; default --ttl 15m)"
+            )))
+        }
+    }
 }
 
 /// The agent's durable sync endpoint (REQ-106): published continuously.

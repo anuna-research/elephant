@@ -85,17 +85,38 @@ pub fn invite(ctx: &Ctx, theory: &str, ttl: &str) -> AppResult<()> {
         // security argument for the short invite secret, so it is enforced,
         // not advisory.
         let ceremony = async {
-            // Accept a single joiner (single-use invite, REQ-110).
-            let incoming = listener.accept().await.ok_or_else(|| {
-                AppError::Transport("rendezvous closed before a joiner arrived".into())
-            })?;
-            let conn = incoming
-                .await
-                .map_err(|e| AppError::Transport(format!("handshake: {e}")))?;
-            let (send, recv) = conn
-                .accept_bi()
-                .await
-                .map_err(|e| AppError::Transport(format!("accept stream: {e}")))?;
+            // REQ-110 consumes the invite on the first SPAKE2 *attempt* — but
+            // the rendezvous id is deliberately enumerable (ADR-102), so a
+            // connection that dies before the ceremony reads its first frame
+            // (a stray probe, an aborted dial) is not an attempt and must not
+            // consume it: re-accept until the TTL. Once the joiner's stream
+            // is open the single ceremony run is final, pass or fail.
+            let (send, recv) = loop {
+                let incoming = listener.accept().await.ok_or_else(|| {
+                    AppError::Transport("rendezvous closed before a joiner arrived".into())
+                })?;
+                let conn = match incoming.await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::debug!(err = %e, "inviter: connection failed pre-ceremony; re-accepting");
+                        continue;
+                    }
+                };
+                // A real joiner opens its stream immediately after connecting;
+                // bound the wait so a silent stray cannot stall the invite.
+                match tokio::time::timeout(std::time::Duration::from_secs(10), conn.accept_bi())
+                    .await
+                {
+                    Ok(Ok(bi)) => break bi,
+                    Ok(Err(e)) => {
+                        tracing::debug!(err = %e, "inviter: no stream from peer; re-accepting");
+                    }
+                    Err(_) => {
+                        tracing::debug!("inviter: peer never opened a stream; re-accepting");
+                        conn.close(0u8.into(), b"stalled");
+                    }
+                }
+            };
             let mut stream = tokio::io::join(recv, send);
             join::inviter_side(
                 &mut stream,
@@ -108,17 +129,16 @@ pub fn invite(ctx: &Ctx, theory: &str, ttl: &str) -> AppResult<()> {
             )
             .await
         };
-        let joined = match tokio::time::timeout(ttl, ceremony).await {
-            Ok(result) => result?,
-            Err(_) => {
-                listener.close().await;
-                return Err(AppError::Transport(
-                    "invite expired before a joiner completed the handshake".into(),
-                ));
-            }
-        };
+        // Close the listener endpoint on every path — including a ceremony
+        // error — or the drop aborts the socket ungracefully.
+        let outcome = tokio::time::timeout(ttl, ceremony).await;
         listener.close().await;
-        Ok::<_, AppError>(joined)
+        match outcome {
+            Ok(result) => result,
+            Err(_) => Err(AppError::Transport(
+                "invite expired before a joiner completed the handshake".into(),
+            )),
+        }
     })
     .map(|did| {
         if !ctx.json {
