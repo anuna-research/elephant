@@ -1,8 +1,7 @@
 <h1 align="center">elephant</h1>
 
 <p align="center">
-  <strong>Speech-act coordination on shared, end-to-end-encrypted defeasible theories.</strong><br>
-  <em>John McCarthy's Elephant 2000, made computable.</em>
+  <strong>Speech-act coordination on shared, end-to-end-encrypted defeasible theories.</strong>
 </p>
 
 <p align="center">
