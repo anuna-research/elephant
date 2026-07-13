@@ -12,6 +12,7 @@
 pub mod cli;
 pub mod core;
 pub mod daemon;
+pub mod dag;
 pub mod e2ee;
 pub mod errors;
 pub mod id;

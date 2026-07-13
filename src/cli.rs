@@ -148,6 +148,20 @@ pub enum Command {
     },
     /// Full conclusion dump with firing order (SPEC-003 REQ-208)
     Trace,
+    /// Layered graph of the entire theory
+    ///
+    /// Every literal is a node carrying its effective proof tag; every rule
+    /// draws edges from its body literals to its head, so facts sit at the
+    /// top and derived conclusions flow downward — the theory-wide analogue
+    /// of hence's `board --dag`. Cycles (legal in defeasible theories) and
+    /// rule preferences are listed under the graph. `--json` emits the raw
+    /// graph (nodes, edges with rule labels, superiorities, cycles).
+    Dag {
+        /// Show only the cone around this literal (its transitive
+        /// dependencies and dependents)
+        #[arg(long)]
+        focus: Option<String>,
+    },
 
     // ── plan coordination (SPEC-003 REQ-201..210) ──
     /// Kanban board by task state (hence-compatible JSON)
@@ -349,6 +363,7 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Log => crate::queries::log(&ctx),
         Command::Describe { labels } => crate::queries::describe(&ctx, &labels),
         Command::Trace => crate::queries::trace(&ctx),
+        Command::Dag { focus } => crate::dag::dag(&ctx, focus.as_deref()),
         Command::Board { agent } => crate::tasks::board(&ctx, agent.as_deref()),
         Command::Info => crate::tasks::plan_info(&ctx),
         Command::JoinAs { agent_name } => crate::tasks::join_as(&ctx, agent_name.as_deref()),
