@@ -152,7 +152,13 @@ fn claim_unready_refused() {
 #[test]
 fn block_unblock_with_reason_and_propagation() {
     let e = Env::new();
-    e.ok(&["block", "models", "waiting on schema sign-off", "-t", "plan"]);
+    e.ok(&[
+        "block",
+        "models",
+        "waiting on schema sign-off",
+        "-t",
+        "plan",
+    ]);
     let b = e.json(&["board", "-t", "plan"]);
     // hence semantics: a manual block does NOT upstream-block dependents
     // (only failure states propagate); api stays backlog via its unmet

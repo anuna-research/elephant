@@ -153,14 +153,14 @@ fn theory_create_refuses_malformed_aliases() {
         .success();
     let too_long = "a".repeat(64); // also exactly the id shape
     for bad in [
-        "Release-V1", // uppercase
-        "-staging",   // leading hyphen
-        "release-",   // trailing hyphen
+        "Release-V1",  // uppercase
+        "-staging",    // leading hyphen
+        "release-",    // trailing hyphen
         "release--v1", // adjacent hyphens
-        "my theory",  // space
-        "plan.spl",   // dot
-        "../escape",  // path fragment
-        "",           // empty
+        "my theory",   // space
+        "plan.spl",    // dot
+        "../escape",   // path fragment
+        "",            // empty
         too_long.as_str(),
     ] {
         env.cmd()
@@ -204,7 +204,10 @@ fn theory_create_accepts_ldh_aliases() {
         .success();
     let max = format!("a{}", "b".repeat(62)); // 63 chars
     for good in ["release-v1", "x", "9lives", max.as_str()] {
-        env.cmd().args(["theory", "create", good]).assert().success();
+        env.cmd()
+            .args(["theory", "create", good])
+            .assert()
+            .success();
     }
 }
 

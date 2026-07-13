@@ -198,8 +198,11 @@ async fn two_daemons_converge_over_loopback() {
     wait_for_fact(&bob, &theory_id, "qa-signed").await;
 
     // ── member → steward: the reverse direction, same loops ──
-    elephant::cli::append_asserts(&ctx(&bob, &theory_id), &["(given legal-signed)".to_string()])
-        .unwrap();
+    elephant::cli::append_asserts(
+        &ctx(&bob, &theory_id),
+        &["(given legal-signed)".to_string()],
+    )
+    .unwrap();
     wait_for_fact(&alice, &theory_id, "legal-signed").await;
 
     // ── both replicas converged (REQ-108) ──
