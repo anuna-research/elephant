@@ -125,6 +125,56 @@ One-shot commands route through the daemon when it is live (single writer)
 and fall back to direct store access when it is not. One identity
 participates in any number of fully-disjoint theories.
 
+#### Running under launchd (macOS)
+
+To keep the daemon alive across logins and crashes, run it as a per-user
+LaunchAgent. Use `daemon run` (foreground) — launchd supervises the process
+itself, so the self-backgrounding `daemon start` would confuse it. Save as
+`~/Library/LaunchAgents/io.anuna.elephant.plist`, with the two absolute
+paths adjusted (launchd does not expand `~` or environment variables):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>            <string>io.anuna.elephant</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/elephant</string>
+    <string>daemon</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ELEPHANT_SYNC_INTERVAL</key> <string>30</string>
+  </dict>
+  <key>RunAtLoad</key>        <true/>
+  <key>KeepAlive</key>        <true/>
+  <key>StandardOutPath</key>  <string>/Users/YOU/Library/Logs/elephant-daemon.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/elephant-daemon.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/io.anuna.elephant.plist
+launchctl print gui/$UID/io.anuna.elephant | head   # verify it is running
+launchctl kickstart -k gui/$UID/io.anuna.elephant   # restart (e.g. after reinstall)
+launchctl bootout gui/$UID/io.anuna.elephant        # stop and unload
+```
+
+Notes:
+
+- With `KeepAlive`, launchd restarts the daemon if it exits — including
+  after `elephant daemon stop`. Use `launchctl bootout` to actually stop it.
+- The daemon's flock means a launchd-managed daemon and a manual
+  `elephant daemon start` cannot run at once; the second refuses with
+  `daemon already running (pid …)`.
+- Add a `RUST_LOG` key (e.g. `elephant=debug`) to `EnvironmentVariables`
+  for sync-session tracing in the log file.
+
 ## Architecture
 
 Four sibling libraries do the load-bearing work; elephant is the glue.
