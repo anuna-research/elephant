@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-repository = "https://codeberg.org/anuna/elephant-3000"
+repository = "https://codeberg.org/anuna/elephant"
 description = "Speech-act coordination on shared defeasible theories — Elephant 2000 made computable"
 
 [dependencies]

@@ -12,7 +12,7 @@ use std::process::ExitCode;
 #[command(
     name = "elephant",
     version,
-    about = "Speech-act coordination on shared defeasible theories",
+    about = "Elephant-3000: speech-act coordination on shared defeasible theories",
     long_about = "elephant — Elephant 2000 made computable.\n\
         Agents exchange signed speech acts (assert, retract, promise, request, concede)\n\
         into shared append-only theories; conclusions, task states and commitment\n\
@@ -24,13 +24,13 @@ use std::process::ExitCode;
         \x20 elephant -t release-v1 promise released --by 2026-08-01T00:00:00Z\n\
         \x20 elephant -t release-v1 status            conclusions with proof tags\n\
         \x20 elephant -t release-v1 commitments       who promised what, and its state\n\n\
-        Docs & support: https://codeberg.org/anuna/elephant-3000"
+        Docs & support: https://codeberg.org/anuna/elephant"
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Emit machine-readable JSON on stdout (stable contract, CON-004)
+    /// Emit machine-readable JSON on stdout (stable contract)
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -62,7 +62,7 @@ pub enum Command {
     // ── producers (SPEC-001 REQ-005..009) ──
     /// Assert an SPL statement (or bare literal) into a theory
     Assert(AssertArgs),
-    /// Retract your own earlier statement by sentence-id (E1)
+    /// Retract your own earlier statement by sentence-id
     Retract {
         sentence_id: String,
         #[arg(long)]
@@ -129,11 +129,11 @@ pub enum Command {
         #[arg(required = true, num_args = 2..)]
         facts_then_goal: Vec<String>,
     },
-    /// Commitment ledger with derived states (REQ-015)
+    /// Commitment ledger with derived states
     Commitments,
-    /// The full journal — every entry, including quarantined (REQ-016)
+    /// The full journal — every entry, including quarantined
     Log,
-    /// Stream tag changes for a literal (REQ-017)
+    /// Stream tag changes for a literal
     ///
     /// Prints one line whenever the literal's proof tag changes (e.g. -d →
     /// +D), watching a running daemon when there is one and polling local
@@ -141,12 +141,12 @@ pub enum Command {
     ///
     /// Example: elephant -t release watch release-ready
     Watch { literal: String },
-    /// Definitions + provenance for rule labels (SPEC-003 REQ-208)
+    /// Definitions + provenance for rule labels
     Describe {
         #[arg(required = true)]
         labels: Vec<String>,
     },
-    /// Full conclusion dump with firing order (SPEC-003 REQ-208)
+    /// Full conclusion dump with firing order
     Trace,
     /// Layered graph of the entire theory
     ///
