@@ -247,3 +247,31 @@
 (normally r-propagate-finish-from-log-annotation-permanently-failed permanently-failed-log-annotation upstream-blocked-finish)
 (normally r-propagate-finish-from-log-annotation-stale-v1 stale-v1-log-annotation upstream-blocked-finish)
 (normally r-propagate-finish-from-log-annotation-timeout-v1 timeout-v1-log-annotation upstream-blocked-finish)
+
+(claims agent:claude
+  :at "2026-07-14T14:09:55Z"
+  (given completed-log-annotation))
+
+(claims agent:claude
+  :at "2026-07-14T14:09:55Z"
+  (given claim-v1-determinism)
+  (normally r-cl-state-v1-determinism claim-v1-determinism state-claimed-v1-determinism)
+  (normally r-cl-chain-v1-determinism state-claimed-v1-determinism claimed-determinism)
+)
+
+;; Propagation rules: failures in 'determinism' block downstream tasks
+(normally r-propagate-finish-from-determinism-failed failed-determinism upstream-blocked-finish)
+(normally r-propagate-finish-from-determinism-permanently-failed permanently-failed-determinism upstream-blocked-finish)
+(normally r-propagate-finish-from-determinism-stale-v1 stale-v1-determinism upstream-blocked-finish)
+(normally r-propagate-finish-from-determinism-timeout-v1 timeout-v1-determinism upstream-blocked-finish)
+
+(claims agent:claude
+  :at "2026-07-14T14:19:32Z"
+  (given completed-determinism))
+
+(claims agent:claude
+  :at "2026-07-14T14:19:32Z"
+  (given claim-v1-finish)
+  (normally r-cl-state-v1-finish claim-v1-finish state-claimed-v1-finish)
+  (normally r-cl-chain-v1-finish state-claimed-v1-finish claimed-finish)
+)
