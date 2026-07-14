@@ -445,6 +445,63 @@ pub fn describe(ctx: &Ctx, labels: &[String]) -> AppResult<()> {
     Ok(())
 }
 
+// ── vocab (SPEC-005 REQ-401) ────────────────────────────────────────────
+
+pub fn vocab(ctx: &Ctx) -> AppResult<()> {
+    use crate::core::vocab::escape_controls;
+    let v = view(ctx)?;
+    let vv = crate::core::vocab::view(&v.closure);
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({"v":1, "theory": v.store.theory_id,
+                "vocab": crate::core::vocab::view_json(&vv)})
+        );
+        return Ok(());
+    }
+    if vv.rows.is_empty() {
+        println!("(no vocabulary — empty theory)");
+        return Ok(());
+    }
+    for r in &vv.rows {
+        let roles: Vec<&str> = r.roles.iter().map(|x| x.name()).collect();
+        let mut markers: Vec<String> = Vec::new();
+        if r.built_in {
+            markers.push("built-in".into());
+        }
+        if r.doc.detached {
+            markers.push("detached".into());
+        }
+        if r.doc.redefined {
+            markers.push("redefined".into());
+        }
+        for k in &r.doc.malformed {
+            markers.push(format!("malformed:{k}"));
+        }
+        let marker_txt = if markers.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", markers.join(" "))
+        };
+        let desc = r
+            .doc
+            .description
+            .as_deref()
+            .map(|d| format!("  — {}", escape_controls(d)))
+            .unwrap_or_default();
+        println!(
+            "{:<7} {:<10} {:<28} {}{}{}",
+            r.class.name(),
+            r.family.kind(),
+            escape_controls(&r.family.rendered()),
+            roles.join(","),
+            desc,
+            marker_txt,
+        );
+    }
+    Ok(())
+}
+
 pub fn trace(ctx: &Ctx) -> AppResult<()> {
     let v = view(ctx)?;
     if ctx.json {

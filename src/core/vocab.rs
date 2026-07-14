@@ -504,6 +504,12 @@ fn conforming_string(v: &MetaValue, max_bytes: usize) -> Option<String> {
     None
 }
 
+/// Does a candidate string conform to CON-401 for the given key? Used by
+/// `define` to recognise argv values before signing (REQ-403).
+pub fn value_conforms(key: &str, value: &str) -> bool {
+    conforming_value(key, &MetaValue::String(value.to_string())).is_some()
+}
+
 fn conforming_value(key: &str, v: &MetaValue) -> Option<String> {
     match key {
         "description" => conforming_string(v, 512),

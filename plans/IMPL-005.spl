@@ -125,3 +125,87 @@
 (normally r-propagate-vocab-cli-from-vocab-view-blocked upstream-blocked-vocab-view upstream-blocked-vocab-cli)
 (normally r-propagate-finish-from-advisory-blocked upstream-blocked-advisory upstream-blocked-finish)
 (normally r-propagate-determinism-from-vocab-cli-blocked upstream-blocked-vocab-cli upstream-blocked-determinism)
+
+(claims agent:claude
+  :at "2026-07-14T13:49:28Z"
+  (given completed-vocab-core))
+
+(claims agent:claude
+  :at "2026-07-14T13:49:28Z"
+  (given claim-v1-vocab-docs)
+  (normally r-cl-state-v1-vocab-docs claim-v1-vocab-docs state-claimed-v1-vocab-docs)
+  (normally r-cl-chain-v1-vocab-docs state-claimed-v1-vocab-docs claimed-vocab-docs)
+)
+
+;; Propagation rules: failures in 'vocab-docs' block downstream tasks
+(normally r-propagate-docs-join-from-vocab-docs-failed failed-vocab-docs upstream-blocked-docs-join)
+(normally r-propagate-docs-join-from-vocab-docs-permanently-failed permanently-failed-vocab-docs upstream-blocked-docs-join)
+(normally r-propagate-docs-join-from-vocab-docs-stale-v1 stale-v1-vocab-docs upstream-blocked-docs-join)
+(normally r-propagate-docs-join-from-vocab-docs-timeout-v1 timeout-v1-vocab-docs upstream-blocked-docs-join)
+(normally r-propagate-log-annotation-from-vocab-docs-failed failed-vocab-docs upstream-blocked-log-annotation)
+(normally r-propagate-log-annotation-from-vocab-docs-permanently-failed permanently-failed-vocab-docs upstream-blocked-log-annotation)
+(normally r-propagate-log-annotation-from-vocab-docs-stale-v1 stale-v1-vocab-docs upstream-blocked-log-annotation)
+(normally r-propagate-log-annotation-from-vocab-docs-timeout-v1 timeout-v1-vocab-docs upstream-blocked-log-annotation)
+(normally r-propagate-vocab-view-from-vocab-docs-failed failed-vocab-docs upstream-blocked-vocab-view)
+(normally r-propagate-vocab-view-from-vocab-docs-permanently-failed permanently-failed-vocab-docs upstream-blocked-vocab-view)
+(normally r-propagate-vocab-view-from-vocab-docs-stale-v1 stale-v1-vocab-docs upstream-blocked-vocab-view)
+(normally r-propagate-vocab-view-from-vocab-docs-timeout-v1 timeout-v1-vocab-docs upstream-blocked-vocab-view)
+
+(claims agent:claude
+  :at "2026-07-14T13:49:28Z"
+  (given completed-vocab-docs))
+
+(claims agent:claude
+  :at "2026-07-14T13:49:28Z"
+  (given claim-v1-vocab-view)
+  (normally r-cl-state-v1-vocab-view claim-v1-vocab-view state-claimed-v1-vocab-view)
+  (normally r-cl-chain-v1-vocab-view state-claimed-v1-vocab-view claimed-vocab-view)
+)
+
+;; Propagation rules: failures in 'vocab-view' block downstream tasks
+(normally r-propagate-advisory-from-vocab-view-failed failed-vocab-view upstream-blocked-advisory)
+(normally r-propagate-advisory-from-vocab-view-permanently-failed permanently-failed-vocab-view upstream-blocked-advisory)
+(normally r-propagate-advisory-from-vocab-view-stale-v1 stale-v1-vocab-view upstream-blocked-advisory)
+(normally r-propagate-advisory-from-vocab-view-timeout-v1 timeout-v1-vocab-view upstream-blocked-advisory)
+(normally r-propagate-vocab-cli-from-vocab-view-failed failed-vocab-view upstream-blocked-vocab-cli)
+(normally r-propagate-vocab-cli-from-vocab-view-permanently-failed permanently-failed-vocab-view upstream-blocked-vocab-cli)
+(normally r-propagate-vocab-cli-from-vocab-view-stale-v1 stale-v1-vocab-view upstream-blocked-vocab-cli)
+(normally r-propagate-vocab-cli-from-vocab-view-timeout-v1 timeout-v1-vocab-view upstream-blocked-vocab-cli)
+
+(claims agent:claude
+  :at "2026-07-14T13:49:28Z"
+  (given completed-vocab-view))
+
+(claims agent:claude
+  :at "2026-07-14T13:55:11Z"
+  (given completed-vocab-cli))
+
+(claims agent:claude
+  :at "2026-07-14T13:55:11Z"
+  (given claim-v1-define)
+  (normally r-cl-state-v1-define claim-v1-define state-claimed-v1-define)
+  (normally r-cl-chain-v1-define state-claimed-v1-define claimed-define)
+)
+
+;; Propagation rules: failures in 'define' block downstream tasks
+(normally r-propagate-determinism-from-define-failed failed-define upstream-blocked-determinism)
+(normally r-propagate-determinism-from-define-permanently-failed permanently-failed-define upstream-blocked-determinism)
+(normally r-propagate-determinism-from-define-stale-v1 stale-v1-define upstream-blocked-determinism)
+(normally r-propagate-determinism-from-define-timeout-v1 timeout-v1-define upstream-blocked-determinism)
+
+(claims agent:claude
+  :at "2026-07-14T13:55:11Z"
+  (given completed-define))
+
+(claims agent:claude
+  :at "2026-07-14T13:55:11Z"
+  (given claim-v1-docs-join)
+  (normally r-cl-state-v1-docs-join claim-v1-docs-join state-claimed-v1-docs-join)
+  (normally r-cl-chain-v1-docs-join state-claimed-v1-docs-join claimed-docs-join)
+)
+
+;; Propagation rules: failures in 'docs-join' block downstream tasks
+(normally r-propagate-finish-from-docs-join-failed failed-docs-join upstream-blocked-finish)
+(normally r-propagate-finish-from-docs-join-permanently-failed permanently-failed-docs-join upstream-blocked-finish)
+(normally r-propagate-finish-from-docs-join-stale-v1 stale-v1-docs-join upstream-blocked-finish)
+(normally r-propagate-finish-from-docs-join-timeout-v1 timeout-v1-docs-join upstream-blocked-finish)

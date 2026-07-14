@@ -94,6 +94,19 @@ pub enum Command {
         #[arg(long = "re")]
         in_reply_to: String,
     },
+    /// Document a predicate symbol (validated vocabulary producer)
+    ///
+    /// Fully recognises the indicator and every property against the
+    /// vocabulary documentation grammar (SPEC-005 CON-401) before anything
+    /// is signed, then appends one signed assert Entry: a
+    /// `(predicate …)` declaration when --arg is given, else a
+    /// `(meta (predicate <functor> <arity>) …)` meta-target. Raw
+    /// `elephant assert` stays legal and unvalidated; `define` is the
+    /// recognising producer.
+    ///
+    /// Example: elephant -t release define ci-green/1 --arg task:symbol \
+    ///          --desc "CI pipeline green for task ?t" --kind evidence
+    Define(DefineArgs),
 
     // ── reads (SPEC-001 REQ-010..017, SPEC-003 REQ-208) ──
     /// All conclusions with proof tags
@@ -162,6 +175,15 @@ pub enum Command {
         #[arg(long)]
         focus: Option<String>,
     },
+    /// The theory's working vocabulary: families, roles, class, docs
+    ///
+    /// One row per predicate family occurring in the admitted theory or
+    /// carrying documentation: its kind (predicate/legacy/malformed),
+    /// roles (fact/head/body/goal), class (hole/orphan/active), built-in
+    /// marker, and documentation with drift markers (malformed keys,
+    /// detached docs, cross-signer redefinition). Derived from the corpus —
+    /// never a pinned schema (SPEC-005 REQ-401).
+    Vocab,
 }
 
 #[derive(Subcommand)]
@@ -222,6 +244,25 @@ pub enum DaemonCmd {
 pub struct AssertArgs {
     /// SPL statement, or a bare literal (sugared to `(given …)`)
     pub spl: String,
+}
+
+#[derive(Args)]
+pub struct DefineArgs {
+    /// Predicate indicator `functor/arity` (e.g. ci-green/1); arity ≥ 1
+    pub indicator: String,
+    /// Description, 1–512 bytes, no control characters
+    #[arg(long = "desc", value_name = "TEXT")]
+    pub desc: Option<String>,
+    /// Vocabulary kind
+    #[arg(long, value_name = "evidence|state|discovery")]
+    pub kind: Option<String>,
+    /// Expected asserter, 1–128 bytes (e.g. "role:ci")
+    #[arg(long, value_name = "WHO")]
+    pub asserter: Option<String>,
+    /// Argument declaration NAME:SORT (repeatable; count must equal arity;
+    /// sorts: symbol integer decimal float number any)
+    #[arg(long = "arg", value_name = "NAME:SORT")]
+    pub args: Vec<String>,
 }
 
 /// Entry point: parse, init tracing, dispatch, render errors per REQ-024.
@@ -315,6 +356,8 @@ fn dispatch(cli: Cli) -> AppResult<()> {
             literal,
             in_reply_to,
         } => produce_concede(&ctx, &literal, &in_reply_to),
+        Command::Define(args) => produce_define(&ctx, &args),
+        Command::Vocab => crate::queries::vocab(&ctx),
         Command::Status { trust } => crate::queries::status(&ctx, trust),
         Command::Explain { literal } => crate::queries::explain(&ctx, &literal),
         Command::WhyNot { literal } => crate::queries::why_not(&ctx, &literal),
@@ -584,6 +627,190 @@ fn produce_concede(ctx: &Ctx, literal: &str, in_reply_to: &str) -> AppResult<()>
         },
         "concede",
     )
+}
+
+// ── define (SPEC-005 REQ-403, CON-401) ──────────────────────────────────
+
+/// The recognising vocabulary producer: full recognition against CON-401
+/// before anything is signed or stored (exit 3 on any refusal), then one
+/// signed assert Entry through the ordinary producer path.
+fn produce_define(ctx: &Ctx, args: &DefineArgs) -> AppResult<()> {
+    use crate::core::vocab;
+    let refuse = |m: String| AppError::Parse(m);
+
+    // Indicator: spindle's recogniser owns the *form* (SPEC-024, one
+    // parser per language); CON-401 constrains it further — LDH functor,
+    // canonical arity (no leading zero, ≤ u32::MAX), arity ≥ 1.
+    spindle_parser::parse_predicate_indicator(&args.indicator).map_err(|e| {
+        refuse(format!(
+            "'{}' is not a predicate indicator (functor/arity): {e}",
+            args.indicator
+        ))
+    })?;
+    let (functor, arity_txt) = args
+        .indicator
+        .split_once('/')
+        .ok_or_else(|| refuse(format!("'{}' has no /arity part", args.indicator)))?;
+    if !crate::store::is_valid_alias(functor) {
+        return Err(refuse(format!(
+            "functor '{functor}' is not an LDH label (1-63 lowercase letters, \
+             digits and hyphens — SPEC-001 REQ-003)"
+        )));
+    }
+    let canonical_arity = !arity_txt.is_empty()
+        && arity_txt.bytes().all(|b| b.is_ascii_digit())
+        && (arity_txt == "0" || !arity_txt.starts_with('0'));
+    if !canonical_arity {
+        return Err(refuse(format!(
+            "arity '{arity_txt}' is not canonical (digits only, no leading zero)"
+        )));
+    }
+    let arity: u64 = arity_txt
+        .parse()
+        .map_err(|_| refuse(format!("arity '{arity_txt}' overflows")))?;
+    if arity > u64::from(u32::MAX) {
+        return Err(refuse(format!("arity {arity} exceeds 2^32-1")));
+    }
+    if arity == 0 {
+        return Err(refuse(format!(
+            "'{functor}/0' is not a define target: a nullary predicate is \
+             documented, if at all, as a legacy (meta {functor} …) assert on \
+             the bare atom (SPEC-005 CON-402)"
+        )));
+    }
+    if vocab::builtin(functor).is_some() {
+        return Err(refuse(format!(
+            "'{functor}' is reserved built-in vocabulary at every arity \
+             (SPEC-005 REQ-404); it cannot be redefined from the wire"
+        )));
+    }
+
+    // Properties: ≥ 1 required; each checked against the CON-401 value
+    // grammar. Quotes and backslashes are refused rather than escaped —
+    // the payload embeds these values in quoted SPL atoms, and we reject
+    // anything that cannot ride one verbatim (LangSec: never repair).
+    let props: Vec<(&str, &String, bool)> = [
+        ("description", args.desc.as_ref(), true),
+        ("kind", args.kind.as_ref(), false),
+        ("asserter", args.asserter.as_ref(), true),
+    ]
+    .into_iter()
+    .filter_map(|(k, v, q)| v.map(|v| (k, v, q)))
+    .collect();
+    if props.is_empty() {
+        return Err(refuse(
+            "define needs at least one property: --desc, --kind or --asserter".into(),
+        ));
+    }
+    for (key, value, _) in &props {
+        if !vocab::value_conforms(key, value) {
+            return Err(refuse(format!(
+                "--{} value does not conform to CON-401 ({})",
+                if *key == "description" { "desc" } else { key },
+                match *key {
+                    "description" => "1-512 bytes UTF-8, no control characters",
+                    "asserter" => "1-128 bytes UTF-8, no control characters",
+                    _ => "one of: evidence, state, discovery",
+                }
+            )));
+        }
+        if value.contains('"') || value.contains('\\') || value.contains(';') {
+            return Err(refuse(format!(
+                "--{} value may not contain '\"', '\\' or ';' (it is embedded \
+                 in a quoted SPL atom)",
+                if *key == "description" { "desc" } else { key }
+            )));
+        }
+    }
+
+    // Argument declarations: count equals arity, unique LDH names,
+    // primitive sorts.
+    const SORTS: [&str; 6] = ["symbol", "integer", "decimal", "float", "number", "any"];
+    let mut decls: Vec<(&str, &str)> = Vec::with_capacity(args.args.len());
+    for spec in &args.args {
+        let (name, sort) = spec
+            .split_once(':')
+            .ok_or_else(|| refuse(format!("--arg '{spec}' is not NAME:SORT")))?;
+        if !crate::store::is_valid_alias(name) {
+            return Err(refuse(format!("--arg name '{name}' is not an LDH label")));
+        }
+        if !SORTS.contains(&sort) {
+            return Err(refuse(format!(
+                "--arg sort '{sort}' is not primitive (symbol|integer|decimal|float|number|any)"
+            )));
+        }
+        if decls.iter().any(|(n, _)| *n == name) {
+            return Err(refuse(format!("--arg name '{name}' is not unique")));
+        }
+        decls.push((name, sort));
+    }
+    if !decls.is_empty() && decls.len() as u64 != arity {
+        return Err(refuse(format!(
+            "{} --arg declarations for arity {arity}: the counts must match",
+            decls.len()
+        )));
+    }
+
+    // Payload: a full declaration when --arg is supplied, else the bare
+    // predicate meta-target (REQ-403).
+    let prop_txt: String = props
+        .iter()
+        .map(|(k, v, quoted)| {
+            if *quoted {
+                format!(" ({k} \"{v}\")")
+            } else {
+                format!(" ({k} {v})")
+            }
+        })
+        .collect();
+    let payload = if decls.is_empty() {
+        format!("(meta (predicate {functor} {arity}){prop_txt})")
+    } else {
+        let arg_txt: Vec<String> = decls.iter().map(|(n, s)| format!("({n} {s})")).collect();
+        format!("(predicate {functor} ({}){prop_txt})", arg_txt.join(" "))
+    };
+
+    // Round-trip verification: parse the payload with the single SPL
+    // recogniser and check the stored record is exactly what was asked
+    // for — any value that smuggles structure fails here, before signing.
+    let parsed = spindle_parser::parse_spl(&payload)
+        .map_err(|e| refuse(format!("constructed payload does not parse: {e}")))?;
+    let sym = spindle_core::vocabulary::PredicateSymbol::try_new(
+        spindle_core::literal::InternedLiteralName::intern(functor),
+        arity as usize,
+    )
+    .map_err(|e| {
+        refuse(format!(
+            "'{functor}/{arity}' is not a predicate symbol: {e}"
+        ))
+    })?;
+    let target = spindle_core::vocabulary::MetaTarget::Predicate(sym);
+    let stored = parsed
+        .get_meta_target(&target)
+        .ok_or_else(|| refuse("payload round-trip lost the documentation record".into()))?;
+    for (key, value, _) in &props {
+        match stored.properties.get(*key) {
+            Some(spindle_core::theory::MetaValue::String(s)) if s == *value => {}
+            other => {
+                return Err(refuse(format!(
+                    "payload round-trip mismatch on '{key}': {other:?}"
+                )));
+            }
+        }
+    }
+    if !decls.is_empty() {
+        let ok = parsed
+            .predicate_declarations()
+            .iter()
+            .any(|d| d.symbol() == sym);
+        if !ok {
+            return Err(refuse(
+                "payload round-trip lost the predicate declaration".into(),
+            ));
+        }
+    }
+
+    produce_assert(ctx, &payload)
 }
 
 /// The sentence-id an entry's own speech act carries (if any).
