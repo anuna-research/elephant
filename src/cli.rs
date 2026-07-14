@@ -12,7 +12,7 @@ use std::process::ExitCode;
 #[command(
     name = "elephant",
     version,
-    about = "Speech-act coordination on shared defeasible theories",
+    about = "Elephant-3000: speech-act coordination on shared defeasible theories",
     long_about = "elephant — Elephant 2000 made computable.\n\
         Agents exchange signed speech acts (assert, retract, promise, request, concede)\n\
         into shared append-only theories; conclusions, task states and commitment\n\
@@ -24,13 +24,13 @@ use std::process::ExitCode;
         \x20 elephant -t release-v1 promise released --by 2026-08-01T00:00:00Z\n\
         \x20 elephant -t release-v1 status            conclusions with proof tags\n\
         \x20 elephant -t release-v1 commitments       who promised what, and its state\n\n\
-        Docs & support: https://codeberg.org/anuna/elephant-3000"
+        Docs & support: https://codeberg.org/anuna/elephant"
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Emit machine-readable JSON on stdout (stable contract, CON-004)
+    /// Emit machine-readable JSON on stdout (stable contract)
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -62,7 +62,7 @@ pub enum Command {
     // ── producers (SPEC-001 REQ-005..009) ──
     /// Assert an SPL statement (or bare literal) into a theory
     Assert(AssertArgs),
-    /// Retract your own earlier statement by sentence-id (E1)
+    /// Retract your own earlier statement by sentence-id
     Retract {
         sentence_id: String,
         #[arg(long)]
@@ -129,11 +129,11 @@ pub enum Command {
         #[arg(required = true, num_args = 2..)]
         facts_then_goal: Vec<String>,
     },
-    /// Commitment ledger with derived states (REQ-015)
+    /// Commitment ledger with derived states
     Commitments,
-    /// The full journal — every entry, including quarantined (REQ-016)
+    /// The full journal — every entry, including quarantined
     Log,
-    /// Stream tag changes for a literal (REQ-017)
+    /// Stream tag changes for a literal
     ///
     /// Prints one line whenever the literal's proof tag changes (e.g. -d →
     /// +D), watching a running daemon when there is one and polling local
@@ -141,19 +141,19 @@ pub enum Command {
     ///
     /// Example: elephant -t release watch release-ready
     Watch { literal: String },
-    /// Definitions + provenance for rule labels (SPEC-003 REQ-208)
+    /// Definitions + provenance for rule labels
     Describe {
         #[arg(required = true)]
         labels: Vec<String>,
     },
-    /// Full conclusion dump with firing order (SPEC-003 REQ-208)
+    /// Full conclusion dump with firing order
     Trace,
     /// Layered graph of the entire theory
     ///
     /// Every literal is a node carrying its effective proof tag; every rule
     /// draws edges from its body literals to its head, so facts sit at the
-    /// top and derived conclusions flow downward — the theory-wide analogue
-    /// of hence's `board --dag`. Cycles (legal in defeasible theories) and
+    /// top and derived conclusions flow downward — a whole-theory dependency
+    /// view. Cycles (legal in defeasible theories) and
     /// rule preferences are listed under the graph. `--json` emits the raw
     /// graph (nodes, edges with rule labels, superiorities, cycles).
     Dag {
@@ -162,37 +162,6 @@ pub enum Command {
         #[arg(long)]
         focus: Option<String>,
     },
-
-    // ── plan coordination (SPEC-003 REQ-201..210) ──
-    /// Kanban board by task state (hence-compatible JSON)
-    Board {
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// Render the (meta plan …) block
-    Info,
-    /// Assert this agent as available for assignment rules
-    #[command(name = "join-as")]
-    JoinAs { agent_name: Option<String> },
-    /// Ready, unclaimed assignments for an agent
-    Next {
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// Claim a ready task (hence chain bundle)
-    Claim {
-        task: String,
-        #[arg(long)]
-        force: bool,
-    },
-    /// Withdraw a claim
-    Unclaim { task: String },
-    /// Assert completion
-    Complete { task: String },
-    /// Block a task with a reason
-    Block { task: String, reason: String },
-    /// Remove a block
-    Unblock { task: String },
 }
 
 #[derive(Subcommand)]
@@ -209,12 +178,7 @@ pub enum IdCmd {
 #[derive(Subcommand)]
 pub enum TheoryCmd {
     /// Create a new theory (mints genesis, derives theory id)
-    Create {
-        name: String,
-        /// Seed with a template: plan (hence skeleton)
-        #[arg(long)]
-        template: Option<String>,
-    },
+    Create { name: String },
     /// List locally-held theories
     List,
     /// Issue a single-use invite code (prints once; TTL bounded)
@@ -258,9 +222,6 @@ pub enum DaemonCmd {
 pub struct AssertArgs {
     /// SPL statement, or a bare literal (sugared to `(given …)`)
     pub spl: String,
-    /// Task annotation (hooks/metadata only)
-    #[arg(long)]
-    pub task: Option<String>,
 }
 
 /// Entry point: parse, init tracing, dispatch, render errors per REQ-024.
@@ -364,15 +325,6 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Describe { labels } => crate::queries::describe(&ctx, &labels),
         Command::Trace => crate::queries::trace(&ctx),
         Command::Dag { focus } => crate::dag::dag(&ctx, focus.as_deref()),
-        Command::Board { agent } => crate::tasks::board(&ctx, agent.as_deref()),
-        Command::Info => crate::tasks::plan_info(&ctx),
-        Command::JoinAs { agent_name } => crate::tasks::join_as(&ctx, agent_name.as_deref()),
-        Command::Next { agent } => crate::tasks::next(&ctx, agent.as_deref()),
-        Command::Claim { task, force } => crate::tasks::claim(&ctx, &task, force),
-        Command::Unclaim { task } => crate::tasks::unclaim(&ctx, &task),
-        Command::Complete { task } => crate::tasks::complete(&ctx, &task),
-        Command::Block { task, reason } => crate::tasks::block(&ctx, &task, &reason),
-        Command::Unblock { task } => crate::tasks::unblock(&ctx, &task),
         Command::Daemon(cmd) => handle_daemon(&ctx, cmd),
         Command::Watch { literal } => watch_cmd(&ctx, &literal),
     }
@@ -673,29 +625,11 @@ pub fn now_pair() -> (u64, String) {
 
 fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
     match cmd {
-        TheoryCmd::Create { name, template } => {
+        TheoryCmd::Create { name } => {
             refuse_at_on_write(ctx, "theory create")?;
-            let seed = match template.as_deref() {
-                None => Vec::new(),
-                Some("plan") => crate::tasks::plan_template(&name, &now_pair().1),
-                Some(other) => {
-                    return Err(AppError::Usage(format!(
-                        "unknown template '{other}' (available: plan)"
-                    )));
-                }
-            };
             let ident = crate::id::load(&ctx.paths)?;
             let (wall_ms, ts) = now_pair();
             let store = crate::store::TheoryStore::create(&ctx.paths, &ident, &name, wall_ms, &ts)?;
-            if !seed.is_empty() {
-                let seed_ctx = Ctx {
-                    paths: ctx.paths.clone(),
-                    json: false,
-                    theory: Some(store.theory_id.clone()),
-                    at: None,
-                };
-                append_asserts(&seed_ctx, &seed)?;
-            }
             if ctx.json {
                 println!(
                     "{}",

@@ -145,9 +145,11 @@ is to document them in the same batch:
 ```
 
 Evidence rules SHOULD conclude `verified-<task>` — already part of the
-frozen discovery vocabulary — never `completed-<task>`, whose
-given-fact semantics are frozen by
-[[SPEC-003-elephant-tasks#ADR-201]] (rationale in [[#ADR-401]]). After
+reserved discovery vocabulary — never `completed-<task>`, whose
+given-fact semantics come from the hence lifecycle pattern (recorded in
+[[SPEC-003-elephant-tasks#ADR-201]], now superseded by
+[[SPEC-003-elephant-tasks#ADR-206]]; the predicate stays reserved by
+[[#REQ-404]] registration; rationale in [[#ADR-401]]). After
 this batch, every other participant reaches the names mechanically:
 `require verified-m1` returns the two evidence literals *with their
 descriptions* ([[#REQ-405]]); nobody guesses.
@@ -240,10 +242,12 @@ Trace: [[#TEST-403]] · [[#CON-401]] · [[SPEC-001-elephant-core#REQ-005]]
 #### REQ-404: Built-in vocabulary registry
 
 The vocabulary layer SHALL ship the following closed built-in registry —
-the frozen vocabulary of [[SPEC-003-elephant-tasks]] §1 (as emitted by
-the task verbs and hence plan import) plus [[SPEC-001-elephant-core]]'s
-reserved predicate. This table is normative and exhaustive; membership
-is not extensible from the wire.
+the hence lifecycle vocabulary of [[SPEC-003-elephant-tasks]] §1 (still
+*reserved* here after the task verbs that emitted it were removed in
+[[SPEC-003-elephant-tasks#ADR-206]], so legacy corpora remain
+interpretable) plus [[SPEC-001-elephant-core]]'s reserved predicate. This
+table is normative and exhaustive; membership is not extensible from the
+wire.
 
 | Family | Ground pattern | Kind |
 |---|---|---|
@@ -404,11 +408,13 @@ existing pull channel (`why-not`/`require`) — the gap is discoverability
 and documentation, not enforcement.
 
 The evidence-rule convention (§1.3) concludes `verified-<task>` rather
-than deriving `completed-<task>` because completion's given-fact
-semantics are byte-frozen ([[SPEC-003-elephant-tasks#ADR-201]]); a
-derived completion would change board semantics for every hence-ported
-plan. `verified-` is already in the frozen discovery set, so the
-convention composes with the freeze instead of amending it.
+than deriving `completed-<task>` because completion carries given-fact
+semantics in the hence lifecycle pattern
+([[SPEC-003-elephant-tasks#ADR-201]], superseded by
+[[SPEC-003-elephant-tasks#ADR-206]] but still the shape of any legacy
+corpus); a derived completion would change those semantics wherever such
+a plan is present. `verified-` is already in the reserved discovery set,
+so the convention composes with it instead of amending it.
 
 **Trade-offs.** (+) zero new corpus objects, performatives, or genesis
 fields; openness preserved; documentation is attributable, syncable, and
