@@ -331,3 +331,32 @@ fn test_405_undocumented_shape_unchanged() {
     let r = e.json(&["require", "yy-goal", "-t", "release"]);
     assert!(r.get("docs").is_none());
 }
+
+/// SPEC-005 TEST-407 (CLI surface): same-signer documentation updates are
+/// never annotated in the journal (the cross-signer annotation kernel is
+/// unit-tested in core::vocab).
+#[test]
+fn test_407_log_no_annotation_for_same_signer() {
+    let e = Env::new();
+    e.ok(&[
+        "assert",
+        "(meta deploy-thing (description \"v1\"))",
+        "-t",
+        "release",
+    ]);
+    e.ok(&[
+        "assert",
+        "(meta deploy-thing (description \"v2\"))",
+        "-t",
+        "release",
+    ]);
+    let log = e.json(&["log", "-t", "release"]);
+    assert!(
+        log["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i.get("redefines").is_none()),
+        "same-signer update must not be annotated: {log}"
+    );
+}

@@ -448,9 +448,22 @@ pub fn commitments(ctx: &Ctx) -> AppResult<()> {
 
 pub fn log(ctx: &Ctx) -> AppResult<()> {
     let v = view(ctx)?;
+    // SPEC-005 REQ-407: annotate Entries that overwrite another signer's
+    // winning documentation value (family, key, previous writer).
+    let redefs = crate::core::vocab::redefinitions(&v.closure);
+    for r in &redefs {
+        // OBS-402: redefinition events logged at journal time.
+        tracing::info!(
+            family = %r.family.rendered(),
+            key = %r.key,
+            previous = %r.previous_writer,
+            entry = %r.sid,
+            "vocabulary documentation redefined"
+        );
+    }
     let mut items: Vec<serde_json::Value> = Vec::new();
     for a in &v.closure.admitted {
-        items.push(serde_json::json!({
+        let mut item = serde_json::json!({
             "sid": a.sid,
             "signer": a.entry.signer,
             "performative": a.act.performative(),
@@ -463,7 +476,23 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
                 "active"
             },
             "cbcl": a.entry.cbcl,
-        }));
+        });
+        let mine: Vec<serde_json::Value> = redefs
+            .iter()
+            .filter(|r| Some(&r.sid) == a.sid.as_ref())
+            .map(|r| {
+                serde_json::json!({
+                    "family": r.family.rendered(),
+                    "family_kind": r.family.kind(),
+                    "key": r.key,
+                    "previous_writer": r.previous_writer,
+                })
+            })
+            .collect();
+        if !mine.is_empty() {
+            item["redefines"] = mine.into();
+        }
+        items.push(item);
     }
     for (e, q) in &v.closure.quarantined {
         items.push(serde_json::json!({
@@ -482,12 +511,31 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
         );
     } else {
         for i in &items {
+            let redef = i["redefines"]
+                .as_array()
+                .map(|rs| {
+                    rs.iter()
+                        .map(|r| {
+                            format!(
+                                "  [redefines {} {} — previously by {}]",
+                                crate::core::vocab::escape_controls(
+                                    r["family"].as_str().unwrap_or("?")
+                                ),
+                                r["key"].as_str().unwrap_or("?"),
+                                r["previous_writer"].as_str().unwrap_or("?"),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
+                .unwrap_or_default();
             println!(
-                "{}  {:<9} {:<8} {}",
+                "{}  {:<9} {:<8} {}{}",
                 i["hlc"]["wall_ms"],
                 i["performative"].as_str().unwrap_or("?"),
                 i["status"].as_str().unwrap_or("?"),
                 i["sid"].as_str().unwrap_or("-"),
+                redef,
             );
         }
     }

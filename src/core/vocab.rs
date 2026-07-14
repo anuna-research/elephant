@@ -1146,6 +1146,83 @@ fn demand_from_body(
     }
 }
 
+// ── Redefinition annotations (REQ-407 / OBS-402) ────────────────────────
+
+/// A journal annotation: this Entry overwrote another signer's winning
+/// value for a CON-401 key of a family's documentation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Redefinition {
+    /// Sentence-id of the overwriting Entry.
+    pub sid: String,
+    pub family: Family,
+    pub key: String,
+    pub previous_writer: String,
+}
+
+/// Replay the admitted corpus in canonical order and surface every
+/// cross-signer overwrite of a winning CON-401 key value (REQ-407:
+/// visible, never prevented). Tombstoned, shadowed, and quarantined
+/// Entries never count.
+pub fn redefinitions(closure: &Closure) -> Vec<Redefinition> {
+    let theory = &closure.theory;
+    let mut winners: HashMap<(Family, String), String> = HashMap::new();
+    let mut out = Vec::new();
+    for a in &closure.admitted {
+        if a.retracted || a.label_shadowed {
+            continue;
+        }
+        let SpeechAct::Assert { spl, sentence_id } = &a.act else {
+            continue;
+        };
+        if !spl.contains("(meta") && !spl.contains("(predicate") {
+            continue;
+        }
+        let Ok(t2) = spindle_parser::parse_spl(spl) else {
+            continue;
+        };
+        let mut writes: Vec<(Family, String)> = Vec::new();
+        for (sym, meta) in t2.predicate_metadata() {
+            let functor = sym.functor().to_string();
+            if functor.starts_with(SYNTH_PREFIX) || builtin(&functor).is_some() {
+                continue;
+            }
+            for key in DOC_KEYS {
+                if meta.properties.contains_key(key) {
+                    writes.push((Family::Predicate(*sym), key.to_string()));
+                }
+            }
+        }
+        for (label, meta) in t2.metadata() {
+            if label.starts_with(SYNTH_PREFIX)
+                || theory.get_rule(label).is_some()
+                || builtin(label).is_some()
+            {
+                continue;
+            }
+            for key in DOC_KEYS {
+                if meta.properties.contains_key(key) {
+                    writes.push((Family::Legacy(label.clone()), key.to_string()));
+                }
+            }
+        }
+        writes.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        for (fam, key) in writes {
+            if let Some(prev) = winners.get(&(fam.clone(), key.clone()))
+                && prev != &a.entry.signer
+            {
+                out.push(Redefinition {
+                    sid: sentence_id.clone(),
+                    family: fam.clone(),
+                    key: key.clone(),
+                    previous_writer: prev.clone(),
+                });
+            }
+            winners.insert((fam, key), a.entry.signer.clone());
+        }
+    }
+    out
+}
+
 // ── Advisory (REQ-406) ──────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1888,6 +1965,49 @@ mod tests {
         let r = row(&v, "legacy", "deploy-thing");
         assert_eq!(r.doc.description.as_deref(), Some("v2"));
         assert!(!r.doc.redefined);
+    }
+
+    #[test]
+    fn redefinition_log_annotation() {
+        // TEST-407: a cross-signer overwrite of a winning CON-401 key is
+        // annotated with family, key, and previous writer; same-signer
+        // updates and retract-then-redefine never are.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(meta deploy-thing (description \"mine\"))");
+        f.assert_spl(1, "(meta deploy-thing (description \"mine v2\"))");
+        let sid3 = f.assert_spl(
+            2,
+            "(meta deploy-thing (description \"theirs\") (kind state))",
+        );
+        let r = redefinitions(&f.close());
+        assert_eq!(r.len(), 1, "only the cross-signer description overwrite");
+        assert_eq!(r[0].sid, sid3);
+        assert_eq!(r[0].family, Family::Legacy("deploy-thing".into()));
+        assert_eq!(r[0].key, "description");
+        assert_eq!(r[0].previous_writer, did(1));
+
+        // Retract-and-redefine by one signer does not flag; a tombstoned
+        // Entry never counts as the previous writer.
+        let mut f = Fixture::new();
+        let s1 = f.assert_spl(1, "(meta deploy-thing (description \"v1\"))");
+        f.add(
+            1,
+            SpeechAct::Retract {
+                target: s1,
+                reason: "withdrawn".into(),
+            },
+        );
+        f.assert_spl(1, "(meta deploy-thing (description \"v2\"))");
+        assert!(redefinitions(&f.close()).is_empty());
+
+        // Predicate-target carrier is annotated on its symbol too.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(meta (predicate ci-green 1) (description \"a\"))");
+        let sid = f.assert_spl(2, "(meta (predicate ci-green 1) (description \"b\"))");
+        let r = redefinitions(&f.close());
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].sid, sid);
+        assert_eq!(r[0].family.rendered(), "ci-green/1");
     }
 
     #[test]
