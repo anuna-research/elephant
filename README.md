@@ -21,10 +21,13 @@ coordinate by exchanging **signed speech acts** into shared, append-only
 stands is *derived* by defeasible reasoning over signed evidence — never
 decreed by a status column.
 
-It is the successor to [hence](https://codeberg.org/anuna/hence): the same
-task-coordination surface (`board`, `claim/complete/block`,
-`why-not/require/what-if`), but the plan is no longer a local file —
-it is a peer-to-peer, encrypted theory that travels.
+It is the successor to [hence](https://codeberg.org/anuna/hence) — in
+ideas, not surface. hence coordinated work by treating completion as a
+defeasible conclusion over a local plan file; elephant carries that idea
+onto a peer-to-peer, encrypted theory that travels, and drops the
+file-bound task-verb surface. Whether a task is done is still something
+you *ask the theory* (`status`, `why-not`, `require`, `what-if`), not a
+column you drag.
 
 The concept comes from three observations:
 
@@ -89,20 +92,6 @@ password (never on the wire). After key confirmation, Alice adds Bob to the
 theory's MLS group, seals the introduction, hands over the keybook, and Bob
 pulls the whole (encrypted) history. A wrong code fails opaquely and leaves
 no partial state.
-
-### The task layer (hence-compatible)
-
-```bash
-elephant theory create sprint --template plan
-elephant join-as alice -t sprint
-elephant next --agent alice -t sprint
-elephant claim models -t sprint
-elephant complete models -t sprint           # unblocks dependents
-elephant board -t sprint
-```
-
-The lifecycle SPL is byte-compatible with hence 0.7's chain-cancellation
-bundles, so existing hence plans and agent scripts port directly.
 
 ### The daemon
 
@@ -220,7 +209,7 @@ specs for the full design:
 
 - [`specs/SPEC-001-elephant-core.md`](specs/SPEC-001-elephant-core.md) — corpus, closure, commitments.
 - [`specs/SPEC-002-elephant-p2p.md`](specs/SPEC-002-elephant-p2p.md) — daemon, SPAKE2 join, discovery, sync.
-- [`specs/SPEC-003-elephant-tasks.md`](specs/SPEC-003-elephant-tasks.md) — the hence-successor task layer.
+- [`specs/SPEC-003-elephant-tasks.md`](specs/SPEC-003-elephant-tasks.md) — the hence lifecycle SPL (task-verb surface retired in 0.3.0; the vocabulary stays legal and reserved).
 - [`specs/SPEC-004-elephant-e2ee.md`](specs/SPEC-004-elephant-e2ee.md) — MLS end-to-end encryption.
 
 ## Development
@@ -240,7 +229,7 @@ Anuna sibling repos are consumed as path dependencies (`../cbcl-rs`,
 ## Status
 
 **v0.1.** The core (identity, corpus, closure, commitments, queries), the
-hence-successor task layer, the daemon's loopback control plane, MLS
+daemon's loopback control plane, MLS
 end-to-end encryption (including member removal with corpus-key rotation),
 and the SPAKE2 join ceremony are implemented and tested (the join
 choreography and the E2EE removal property are covered end-to-end). The

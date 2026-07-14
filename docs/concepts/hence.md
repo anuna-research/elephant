@@ -9,8 +9,11 @@ Its lifecycle SPL — versioned chain-cancellation bundles
 `prefer`) — is the proven encoding of mutable task state atop monotonic
 SDL.
 
-elephant-3000 is hence's successor ([[SPEC-003-elephant-tasks]]): the
-same SPL vocabulary and board semantics, carried as signed [[Speech Act]]
-Entries in a p2p [[Logical Theory]] instead of file appends — realising
-the shelved hence-v2 upgrade plan (Ed25519-load-bearing claims, CBCL
-wire, partitions, tombstone retraction) on the elephant substrate.
+elephant-3000 is hence's successor ([[SPEC-003-elephant-tasks]]) — in
+ideas, not surface. It carries hence's core insight (completion as a
+defeasible conclusion) onto signed [[Speech Act]] Entries in a p2p
+[[Logical Theory]] instead of file appends. The hence lifecycle SPL
+stays legal and reserved, but hence's task-verb surface
+(`claim`/`complete`/`board`/…) was **not** carried over — it was removed
+in SPEC-003 0.3.0 (ADR-206); a successor need not be backwards
+compatible.
