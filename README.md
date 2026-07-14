@@ -70,6 +70,27 @@ elephant assert 'legal-signed' -t release
 elephant commitments -t release             # legal-signed … fulfilled
 ```
 
+Vocabulary (SPEC-005) — the theory's working glossary, derived from the
+corpus, never a pinned schema:
+
+```bash
+# document a predicate before (or after) anyone asserts it — validated,
+# signed, and synced like any other statement
+elephant define ci-green/1 --arg task:symbol \
+    --desc "CI pipeline green for task ?t" --kind evidence --asserter role:ci -t release
+
+elephant vocab -t release                   # families × roles × class × docs
+#   hole    predicate  ci-green/1   body — CI pipeline green for task ?t
+#   active  legacy     verified     body  [built-in]
+
+# why-not / require answers now carry the documentation of whatever is
+# missing, and a daemon-served assert that lands where nothing listens
+# gets a near-miss advisory in its receipt (never an error):
+elephant assert 'ci-green-m2' -t release
+#   advisory (sibling): family ci-green
+#     did you mean ci-green-m1?  (listener r-verified)
+```
+
 ## Usage
 
 ### Joining across machines
@@ -211,6 +232,7 @@ specs for the full design:
 - [`specs/SPEC-002-elephant-p2p.md`](specs/SPEC-002-elephant-p2p.md) — daemon, SPAKE2 join, discovery, sync.
 - [`specs/SPEC-003-elephant-tasks.md`](specs/SPEC-003-elephant-tasks.md) — the hence lifecycle SPL (task-verb surface retired in 0.3.0; the vocabulary stays legal and reserved).
 - [`specs/SPEC-004-elephant-e2ee.md`](specs/SPEC-004-elephant-e2ee.md) — MLS end-to-end encryption.
+- [`specs/SPEC-005-elephant-vocabulary.md`](specs/SPEC-005-elephant-vocabulary.md) — predicate vocabulary: `vocab`/`define`, documented explanations, the near-miss advisory.
 
 ## Development
 

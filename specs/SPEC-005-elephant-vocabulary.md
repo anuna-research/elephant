@@ -1,10 +1,11 @@
 ---
 id: SPEC-005
 title: elephant — predicate vocabulary: introspection, documentation, coining
-version: 0.5.0
-status: implementing
+version: 0.5.1
+status: implemented
 date: 2026-07-13
-last-updated: 2026-07-14
+last-updated: 2026-07-15
+implemented-date: 2026-07-15
 audience: agent, human reviewer
 ---
 
@@ -262,10 +263,14 @@ never `hole` (a bounded, named deferral — see *Out of fragment*).
 *Proven fact (definition).* A ground literal is **proven** iff it is a
 defeasibly-provable conclusion of the closure under the local trust
 policy and evaluation time ([[SPEC-001-elephant-core#REQ-023]]) — i.e. it
-appears in the closure's accepted weighted-conclusion set (admitted
-status and net-positive weight), not merely materialised as an
-intermediate derivation. "Provable"/"proven" throughout [[#REQ-401]] and
-[[#REQ-406]] mean exactly this.
+appears in the closure's weighted-conclusion set with a positive tag
+(+D/+d), not merely materialised as an intermediate derivation. (0.5.1:
+the earlier "net-positive weight" qualifier is dropped — the default
+trust policy assigns weight 0 to every source, so a degree filter would
+empty the proven set on any theory with no local trust statements;
+provability is the tag — the same notion commitment fulfilment uses —
+and degrees remain threshold/display data.) "Provable"/"proven"
+throughout [[#REQ-401]] and [[#REQ-406]] mean exactly this.
 
 *Demanded ground instances (supported fragment).* Defined per occurrence
 kind:
@@ -492,7 +497,12 @@ collide — [[#CON-403]]) for
 every documented family appearing in `missing`/`solutions`
 (undocumented families omitted; `documenter`/`redefined` deliberately
 omitted here — provenance lives in the vocab view; shape per
-[[#CON-403]]). Output for undocumented families is unchanged. The
+[[#CON-403]]). (0.5.1 recorded limitation: a JSON object cannot key a
+documented *legacy* family literally spelled like an indicator and the
+*predicate* family with the same rendering at once; when both appear
+among the missing literals the predicate entry wins deterministically.
+Keying the docs object on the `(kind, family)` pair is the upgrade path
+— owner HOC.) Output for undocumented families is unchanged. The
 missing/abduced literals are whatever spindle's `why-not`/`require`
 surfaces return — now exact ground instances that discriminate `(p a)`
 from `(p b)` — so the family join keys on their predicate symbol
@@ -1037,8 +1047,13 @@ pair, never on `family` alone: a parameterised `(p x)` (`kind:"predicate",
 family:"p/1"`) and a flat atom spelled `p/1` (`kind:"legacy",
 family:"p/1"`) are distinct rows. `arity` is broken out **only when**
 `kind == "predicate"` (an integer ≥ 1); it is absent for `legacy` and
-`malformed`. `functor` is present for `predicate` (the bare functor) and
-absent otherwise. `literal` carries the ground literal in whatever
+`malformed`, and a nullary predicate doc-target row (`(meta (predicate
+foo 0) …)`, always `detached` — [[#CON-402]]) carries the rendered
+family alone with neither `functor` nor `arity` (0.5.1 clarification).
+`functor` is present for `predicate` (the bare functor) and
+absent otherwise. Object *keys* serialise in the canonical alphabetical
+order of the JSON encoder (0.5.1 clarification: the key **set** shown
+here is normative; the pinned *orderings* below concern arrays). `literal` carries the ground literal in whatever
 spelling the corpus uses — parameterised `(ci-green m1)` or legacy flat
 `ci-green-m1`.
 
@@ -1227,12 +1242,38 @@ all member spam by roster membership and trust weighting
 ## Changelog
 
 <details>
-<summary>Revision history — 0.1.0 → 0.5.0</summary>
+<summary>Revision history — 0.1.0 → 0.5.1</summary>
 
-- 0.5.0 (implementing) — Phase 3 begun on stakeholder direction
-  (2026-07-14, HOC): implementation plan [[IMPL-005]]
-  (`plans/IMPL-005.spl`), branch `spec-005-vocab-impl`. No normative
-  change.
+- 0.5.1 (implemented) — **Phase 3 complete** (2026-07-15, branch
+  `spec-005-vocab-impl`, plan [[IMPL-005]]): `core::vocab` pure core,
+  `vocab`/`define` verbs, [[#REQ-405]] docs join, [[#REQ-406]] daemon
+  advisory over the amended [[SPEC-002-elephant-p2p#CON-101]] append
+  contract, [[#REQ-407]] journal annotation, TEST-401..408 suites
+  (46 unit, 20 CLI/property rows), `vocab_view` bench 2.0 ms @ 1 000
+  entries ([[#NFR-401]]). A fresh-context adversarial code review
+  (Principle 12; 2 blocking, 8 moderate, 5 cosmetic findings) was
+  applied: the two blocking defects (whitespace-variant `(meta …)`
+  bypassing [[#REQ-407]] provenance; flat-atom demand dropped by an
+  out-of-fragment sibling, [[#REQ-401]]) and six moderates are fixed
+  with regression tests. **Normative amendments from findings** (flagged
+  for stakeholder validation): the [[#REQ-401]] *proven fact* definition
+  drops the "net-positive weight" qualifier (default trust weighs every
+  source 0 — a degree filter empties the set; provability is the
+  positive tag, as commitment fulfilment already uses); [[#CON-403]]
+  clarifies nullary doc-target rows carry no `functor`/`arity` and that
+  object-key order is encoder-canonical; [[#REQ-405]] records the
+  docs-object key-collision limitation with its `(kind, family)` upgrade
+  path (owner HOC). Findings also surfaced [[BUG-002]] (the NFR-001
+  closure bench corpus quarantined itself) and a recorded discovery:
+  spindle's `why-not`/`require` do not unify a ground goal against
+  variable rule heads, so the §1.3 narrative example under-delivers
+  until upstream instantiation lands (REQ-405's normative join is
+  unaffected). OBS note: `vocab_views_served` counts advisory
+  reference-view reads (the daemon never serves `vocab` itself).
+
+- 0.5.0 (2026-07-14) — Phase 3 begun on stakeholder direction (HOC):
+  implementation plan [[IMPL-005]] (`plans/IMPL-005.spl`), branch
+  `spec-005-vocab-impl`. No normative change.
 
 - 0.5.0 (draft) — **reviewer round applied (8 findings, 3 blocking).**
   (#1, High) [[#CON-402]] `family` now returns a **discriminated

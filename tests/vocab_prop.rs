@@ -98,23 +98,96 @@ fn close(entries: &[Entry]) -> Closure {
     closure::close(entries, "th-x", "genesis", &resolve, "", 1_784_000_000_000).unwrap()
 }
 
-fn view_bytes(entries: &[Entry]) -> String {
-    let c = close(entries);
+/// Append the single-signer statement library to a REAL store in the given
+/// insertion order (fixed per-statement HLCs, so the canonical order is a
+/// property of the set), read it back through `TheoryStore::entries()`
+/// (the store's own sort is the convergence mechanism under test), close,
+/// and render the view. This is the actual merge path a replica takes.
+fn store_view_bytes(
+    paths: &elephant::paths::Paths,
+    ident: &elephant::id::Identity,
+    theory_name: &str,
+    order: &[usize],
+) -> String {
+    use elephant::store::TheoryStore;
+    let stmts: Vec<&str> = vec![
+        "(given task-m1)",
+        "(normally r-verified (and (ci-green ?t) (review-approved ?t)) (verified ?t))",
+        "(given (review-approved m1))",
+        "(meta (predicate ci-green 1) (description \"CI green v1\") (kind evidence))",
+        "(meta (predicate ci-green 1) (description \"CI green v2\"))",
+        "(meta deploy-thing (description \"first\") (kind bogus))",
+        "(meta deploy-thing (description \"second\"))",
+        "(given deploy-thing)",
+        "(given stale-note-m1)",
+        "(given (p x))",
+        "(given p/1)",
+        "(normally r-flat ci-green-m1 verified-m1)",
+    ];
+    let store = TheoryStore::create(
+        paths,
+        ident,
+        theory_name,
+        1_783_999_999_000,
+        "2026-07-11T00:00:00Z",
+    )
+    .unwrap();
+    store.bind_identity(ident).unwrap();
+    for &i in order {
+        let hlc = elephant::core::envelope::Hlc {
+            wall_ms: 1_784_000_000_000 + i as u64, // fixed per statement
+            logical: 0,
+            node_id: did_crdt::core::validate::node_id_from_pubkey(
+                ident.signing_key.verifying_key().as_bytes(),
+            ),
+        };
+        let sid = Entry::sentence_id(&store.theory_id, ident.did.as_str(), hlc);
+        let e = Entry::create(
+            &store.theory_id,
+            hlc,
+            ident.did.as_str(),
+            &format!("{}#key-0", ident.did.as_str()),
+            &SpeechAct::Assert {
+                sentence_id: sid,
+                spl: stmts[i].to_string(),
+            },
+            "2026-07-11T00:00:00Z",
+            &ident.signing_key,
+        );
+        store.append(&e).unwrap();
+    }
+    let (entries, _) = store.entries();
+    let resolve = store.key_resolver();
+    let c = closure::close(
+        &entries,
+        &store.theory_id,
+        elephant::store::GENESIS_THEORY,
+        &resolve,
+        "",
+        1_784_000_100_000,
+    )
+    .unwrap();
+    assert!(c.quarantined.is_empty(), "fixture must be admitted");
     serde_json::to_string(&vocab::view_json(&vocab::view(&c))).unwrap()
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(ProptestConfig::with_cases(12))]
 
-    /// Shuffled corpus ⇒ byte-identical vocab --json, LWW winners included.
+    /// Shuffled INSERTION order into the real store ⇒ byte-identical
+    /// vocab --json (the store's canonical sort + the view's determinism,
+    /// LWW winners included).
     #[test]
     fn vocab_view_is_merge_order_independent(
         perm in Just((0..12usize).collect::<Vec<_>>()).prop_shuffle()
     ) {
-        let base = corpus();
-        let canonical = view_bytes(&canonicalise(base.clone()));
-        let shuffled: Vec<Entry> = perm.iter().map(|&i| base[i].clone()).collect();
-        let again = view_bytes(&canonicalise(shuffled));
+        // One identity for both runs — the documenter DID is part of the
+        // output; only the insertion order may vary.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = elephant::paths::Paths { home: dir.path().to_path_buf() };
+        let ident = elephant::id::create(&paths, Some("p".into())).unwrap();
+        let canonical = store_view_bytes(&paths, &ident, "ta", &(0..12).collect::<Vec<_>>());
+        let again = store_view_bytes(&paths, &ident, "tb", &perm);
         prop_assert_eq!(canonical, again, "vocab view diverged across merge orders");
     }
 }

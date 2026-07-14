@@ -273,7 +273,7 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
                 if let Some(desc) = doc_of(&vv, m) {
                     println!(
                         "  {} — {}",
-                        lit_display(m),
+                        crate::core::vocab::escape_controls(&lit_display(m)),
                         crate::core::vocab::escape_controls(desc)
                     );
                 }
@@ -327,7 +327,7 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
                     .map(|l| match doc_of(&vv, l) {
                         Some(d) => format!(
                             "{} — {}",
-                            lit_display(l),
+                            crate::core::vocab::escape_controls(&lit_display(l)),
                             crate::core::vocab::escape_controls(d)
                         ),
                         None => lit_display(l),

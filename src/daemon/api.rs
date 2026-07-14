@@ -43,6 +43,8 @@ struct Counters {
     closures_run: u64,
     /// SPEC-005 OBS-401 / SPEC-001 OBS-002 extension.
     advisories_emitted: u64,
+    /// Reference-view reads on the advisory path (`elephant vocab` runs
+    /// its own local closure and never touches the daemon).
     vocab_views_served: u64,
 }
 
@@ -251,7 +253,14 @@ async fn append_entries(
         // view *before* applying the append (it must reflect exactly the
         // entries preceding this one); any failure degrades to None.
         let advisory = if req.advice {
-            compute_advisory(&state2, &theory2, &req.entries)
+            // Degradation clause (REQ-406): ANY failure of the advisory
+            // computation — including a panic or a poisoned cache mutex —
+            // yields no advisory, never a failed append.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                compute_advisory(&state2, &theory2, &req.entries)
+            }))
+            .ok()
+            .flatten()
         } else {
             None
         };
@@ -300,6 +309,7 @@ fn compute_advisory(
         || !t.metadata().is_empty()
         || !t.predicate_metadata().is_empty()
         || !t.predicate_declarations().is_empty()
+        || !t.superiorities().is_empty()
     {
         return None;
     }

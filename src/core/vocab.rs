@@ -84,7 +84,16 @@ impl Family {
 
 impl Ord for Family {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.kind_rank(), self.rendered()).cmp(&(other.kind_rank(), other.rendered()))
+        // The malformed key must be the RAW functor, not the escaped
+        // rendering: escaping is not injective, and an Ord that conflated
+        // two raw functors with the same escaped form would break the
+        // Eq/Ord contract and merge distinct Malformed families in the
+        // view's BTreeMap (CON-402: never merged).
+        let key = |f: &Family| match f {
+            Family::Malformed(raw) => raw.clone(),
+            other => other.rendered(),
+        };
+        (self.kind_rank(), key(self)).cmp(&(other.kind_rank(), key(other)))
     }
 }
 
@@ -748,7 +757,7 @@ pub fn view(closure: &Closure) -> VocabView {
         })
         .collect();
     for (listener, trigger, goal) in &goal_exprs {
-        let mut goal_lits: Vec<Literal> = Vec::new();
+        let mut goal_lits: Vec<BodyLit> = Vec::new();
         if let Some(t) = trigger
             && !t.trim().is_empty()
         {
@@ -758,14 +767,17 @@ pub fn view(closure: &Closure) -> VocabView {
             && !g.trim().is_empty()
             && let Some(l) = parse_one_literal(g)
         {
-            goal_lits.push(l);
+            goal_lits.push(BodyLit {
+                joinable: lit_joinable(&l),
+                lit: l,
+            });
         }
         // Roles: every trigger/goal literal gives its family role `goal`.
         for l in &goal_lits {
-            if l.name().starts_with(SYNTH_PREFIX) {
+            if l.lit.name().starts_with(SYNTH_PREFIX) {
                 continue;
             }
-            let fam = family(l, &tasks);
+            let fam = family(&l.lit, &tasks);
             let a = touch(&mut fams, fam);
             a.roles.insert(Role::Goal);
             a.occurs = true;
@@ -776,7 +788,7 @@ pub fn view(closure: &Closure) -> VocabView {
         // *triggers* also ride the synthetic __ct- rules and get the full
         // body treatment in step 3; requests have no synthetic rule, so
         // their triggers are joined here.
-        let request_trigger_lits: Vec<Literal> = if listener_is_request(closure, listener) {
+        let request_trigger_lits: Vec<BodyLit> = if listener_is_request(closure, listener) {
             trigger
                 .as_deref()
                 .filter(|t| !t.trim().is_empty())
@@ -796,6 +808,7 @@ pub fn view(closure: &Closure) -> VocabView {
         }
         if let Some(g) = goal
             && let Some(l) = parse_one_literal(g)
+            && lit_joinable(&l)
             && l.predicate_args().is_empty()
             && !l.negation
             && !l.name().starts_with(SYNTH_PREFIX)
@@ -825,20 +838,21 @@ pub fn view(closure: &Closure) -> VocabView {
         if label.starts_with(SYNTH_PREFIX) && !label.starts_with(CT_PREFIX) {
             continue;
         }
-        let body: Vec<Literal> = rule
+        // Every logic literal stays in the body list (a dropped conjunct
+        // would make the sibling join unsound and would wrongly strip a
+        // flat atom's syntactic demand — adversarial-review finding #2);
+        // arithmetic/temporal occurrences are carried but marked
+        // unjoinable, so they contribute no demand themselves and block
+        // any witness join that would need them (REQ-401 out-of-fragment).
+        let body: Vec<BodyLit> = rule
             .body
             .iter()
             .filter_map(|b| b.as_logic())
-            .filter(|l| !l.has_arith_args() && !l.is_temporal() && !l.has_temporal_variables())
-            .map(|l| l.to_literal())
+            .map(|l| BodyLit {
+                joinable: !l.has_arith_args() && !l.is_temporal() && !l.has_temporal_variables(),
+                lit: l.to_literal(),
+            })
             .collect();
-        // A body literal lost to the arith/temporal filter above would make
-        // the sibling join unsound (a missing conjunct); detect and skip
-        // the whole rule body when any literal was filtered.
-        let logic_count = rule.body.iter().filter(|b| b.is_logic()).count();
-        if body.len() != logic_count {
-            continue;
-        }
         demand_from_body(&body, &listener, &proven, &tasks, &mut |fam, lit, l| {
             push_demand(&mut demands, fam, lit, l)
         });
@@ -889,7 +903,12 @@ pub fn view(closure: &Closure) -> VocabView {
         let SpeechAct::Assert { spl, .. } = &a.act else {
             continue;
         };
-        if !spl.contains("(meta") && !spl.contains("(predicate") {
+        // Cheap prefilter only — it must be a superset of what the parser
+        // accepts: SPL allows whitespace after `(`, so gating on "(meta"
+        // would let `( meta …)` redefine documentation invisibly
+        // (adversarial-review finding #1). The bare keywords cannot be
+        // split by whitespace, so this never misses a doc write.
+        if !spl.contains("meta") && !spl.contains("predicate") {
             continue;
         }
         let Ok(t2) = spindle_parser::parse_spl(spl) else {
@@ -956,7 +975,12 @@ pub fn view(closure: &Closure) -> VocabView {
         };
         if !built {
             if let Some((last, signers)) = prov.get(fam) {
-                doc.documenter = Some(last.clone());
+                // CON-403: documenter is null on an undocumented family —
+                // when the winning description is absent or malformed, the
+                // historical conforming writer is not surfaced here.
+                if doc.is_documented() {
+                    doc.documenter = Some(last.clone());
+                }
                 doc.redefined = signers.len() >= 2;
             }
             doc.detached = !acc.occurs;
@@ -997,9 +1021,18 @@ fn listener_is_request(closure: &Closure, id: &str) -> bool {
         .any(|a| matches!(&a.act, SpeechAct::Request { request_id, .. } if request_id == id))
 }
 
+/// A body literal for demand computation. `joinable` = the occurrence
+/// sits in the REQ-401 supported fragment (no arithmetic argument
+/// positions, no temporal binding); unjoinable literals carry roles but
+/// contribute no demand and block any witness join that needs them.
+struct BodyLit {
+    lit: Literal,
+    joinable: bool,
+}
+
 /// Parse an SPL body expression (a literal or an `(and …)` conjunction)
 /// into its literals, via the single SPL recogniser.
-fn parse_body_literals(expr: &str) -> Vec<Literal> {
+fn parse_body_literals(expr: &str) -> Vec<BodyLit> {
     let Ok(t) =
         spindle_parser::parse_spl(&format!("(always __probe {} __probe-head)", expr.trim()))
     else {
@@ -1011,7 +1044,12 @@ fn parse_body_literals(expr: &str) -> Vec<Literal> {
             r.body
                 .iter()
                 .filter_map(|b| b.as_logic())
-                .map(|l| l.to_literal())
+                .map(|l| BodyLit {
+                    joinable: !l.has_arith_args()
+                        && !l.is_temporal()
+                        && !l.has_temporal_variables(),
+                    lit: l.to_literal(),
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1020,6 +1058,11 @@ fn parse_body_literals(expr: &str) -> Vec<Literal> {
 fn parse_one_literal(expr: &str) -> Option<Literal> {
     let t = spindle_parser::parse_spl(&format!("(given {})", expr.trim())).ok()?;
     t.rules().next().and_then(|r| r.head.first().cloned())
+}
+
+/// Fragment membership for a standalone literal (commitment/request goal).
+fn lit_joinable(l: &Literal) -> bool {
+    l.temporal_expr.is_none() && l.interval_var.is_none() && l.temporal.is_empty()
 }
 
 fn is_var_name(l: &Literal) -> bool {
@@ -1058,56 +1101,67 @@ fn merge_subst(a: &Substitution, b: &Substitution) -> Option<Substitution> {
 }
 
 /// REQ-401 demanded ground instances for one body (rule body, or a request
-/// trigger conjunction). Emits only *unproven* demanded instances.
+/// trigger conjunction). Emits only *unproven* demanded instances. A flat
+/// atom's demand is syntactic and never depends on its siblings; witness
+/// joins require every participating sibling to be in-fragment.
 fn demand_from_body(
-    body: &[Literal],
+    body: &[BodyLit],
     listener: &str,
     proven: &ProvenSet,
     tasks: &BTreeSet<String>,
     emit: &mut dyn FnMut(Family, Literal, &str),
 ) {
-    for (i, target) in body.iter().enumerate() {
+    for (i, entry) in body.iter().enumerate() {
+        let target = &entry.lit;
         // Negated occurrences count as listeners (roles) but are satisfied
-        // by absence — they contribute no demand.
-        if target.negation || is_var_name(target) || target.name().starts_with(SYNTH_PREFIX) {
+        // by absence — they contribute no demand; out-of-fragment targets
+        // (arith args, temporal) contribute none either (REQ-401).
+        if !entry.joinable
+            || target.negation
+            || is_var_name(target)
+            || target.name().starts_with(SYNTH_PREFIX)
+        {
             continue;
         }
         let fam = family(target, tasks);
         if matches!(fam, Family::Malformed(_)) {
             continue; // no well-formed instance to demand
         }
-        let siblings: Vec<&Literal> = body
+        let tvars = term_vars(target);
+        if tvars.is_empty() && target.predicate_args().is_empty() {
+            // Flat body/goal literal: syntactic demand, as before —
+            // independent of what else the body carries.
+            if !proven.contains(target) {
+                emit(fam, target.clone(), listener);
+            }
+            continue;
+        }
+        let siblings: Vec<&BodyLit> = body
             .iter()
             .enumerate()
             .filter(|(j, _)| *j != i)
             .map(|(_, l)| l)
             .collect();
-        let tvars = term_vars(target);
         if tvars.is_empty() {
-            if target.predicate_args().is_empty() {
-                // Flat body/goal literal: syntactic demand, as before.
-                if !proven.contains(target) {
-                    emit(fam, target.clone(), listener);
-                }
-            } else {
-                // Ground parameterised: demanded under the empty witness —
-                // every sibling must itself be a ground proven fact.
-                let witnessed = siblings.iter().all(|s| is_ground(s) && proven.contains(s));
-                if witnessed && !proven.contains(target) {
-                    emit(fam, target.clone(), listener);
-                }
+            // Ground parameterised: demanded under the empty witness —
+            // every sibling must itself be an in-fragment ground proven
+            // fact (an unjoinable sibling cannot witness).
+            let witnessed = siblings
+                .iter()
+                .all(|s| s.joinable && is_ground(&s.lit) && proven.contains(&s.lit));
+            if witnessed && !proven.contains(target) {
+                emit(fam, target.clone(), listener);
             }
             continue;
         }
         // Variable template: in-fragment only when every template variable
-        // is bound by the sibling join.
+        // is bound by the sibling join and every sibling is joinable.
+        if siblings.iter().any(|s| !s.joinable || is_var_name(&s.lit)) {
+            continue;
+        }
         let mut svars: HashSet<spindle_core::intern::SymbolId> = HashSet::new();
         for s in &siblings {
-            if is_var_name(s) {
-                svars.clear();
-                break;
-            }
-            svars.extend(term_vars(s));
+            svars.extend(term_vars(&s.lit));
         }
         if !tvars.is_subset(&svars) {
             continue; // unbound / partially-bound — no ground demand
@@ -1116,7 +1170,7 @@ fn demand_from_body(
         for s in &siblings {
             let mut next: Vec<Substitution> = Vec::new();
             for b in &bindings {
-                let sb = apply_substitution_to_literal(s, b);
+                let sb = apply_substitution_to_literal(&s.lit, b);
                 if is_ground(&sb) {
                     if proven.contains(&sb) {
                         next.push(b.clone());
@@ -1174,7 +1228,12 @@ pub fn redefinitions(closure: &Closure) -> Vec<Redefinition> {
         let SpeechAct::Assert { spl, sentence_id } = &a.act else {
             continue;
         };
-        if !spl.contains("(meta") && !spl.contains("(predicate") {
+        // Cheap prefilter only — it must be a superset of what the parser
+        // accepts: SPL allows whitespace after `(`, so gating on "(meta"
+        // would let `( meta …)` redefine documentation invisibly
+        // (adversarial-review finding #1). The bare keywords cannot be
+        // split by whitespace, so this never misses a doc write.
+        if !spl.contains("meta") && !spl.contains("predicate") {
             continue;
         }
         let Ok(t2) = spindle_parser::parse_spl(spl) else {
@@ -1370,7 +1429,12 @@ impl VocabRow {
         let mut o = serde_json::Map::new();
         o.insert("kind".into(), self.family.kind().into());
         o.insert("family".into(), self.family.rendered().into());
-        if let Family::Predicate(sym) = &self.family {
+        if let Family::Predicate(sym) = &self.family
+            && sym.arity() >= 1
+        {
+            // CON-403: functor/arity broken out only for predicate rows
+            // with arity ≥ 1; a nullary doc-target row (always detached,
+            // CON-402) carries the rendered family alone.
             o.insert("functor".into(), sym.functor().to_string().into());
             o.insert("arity".into(), sym.arity().into());
         }
@@ -1438,7 +1502,6 @@ pub fn view_json(v: &VocabView) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::core::envelope::{Entry, Hlc};
-    use spindle_core::conclusion::ConclusionType;
 
     fn key(seed: u8) -> ed25519_dalek::SigningKey {
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
@@ -2321,11 +2384,90 @@ mod tests {
     fn proven_set_uses_accepted_weighted_conclusions() {
         let mut f = Fixture::new();
         f.assert_spl(1, "(given qa-signed)");
+        f.assert_spl(1, "(normally r qa-signed release-ready)");
         let c = f.close();
         let p = ProvenSet::from_closure(&c);
-        assert!(p.contains(&lit("qa-signed")));
-        assert!(!p.contains(&lit("legal-signed")));
-        let mut ct = ConclusionType::DefeasiblyProvable;
-        let _ = &mut ct; // silence unused on some toolchains
+        assert!(p.contains(&lit("qa-signed")), "given fact is proven");
+        assert!(p.contains(&lit("release-ready")), "derived +d is proven");
+        assert!(!p.contains(&lit("legal-signed")), "absent is not proven");
+    }
+
+    #[test]
+    fn whitespace_variant_meta_is_not_invisible() {
+        // Adversarial-review finding #1: `( meta …)` parses identically to
+        // `(meta …)`; provenance and the journal annotation must see it.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(given deploy-thing)");
+        f.assert_spl(1, "(meta deploy-thing (description \"mine\"))");
+        let sid = f.assert_spl(2, "( meta deploy-thing (description \"hijack\"))");
+        let c = f.close();
+        let v = view(&c);
+        let r = row(&v, "legacy", "deploy-thing");
+        assert_eq!(r.doc.description.as_deref(), Some("hijack"));
+        assert_eq!(
+            r.doc.documenter.as_deref(),
+            Some(did(2).as_str()),
+            "whitespace variant must still attribute the documenter"
+        );
+        assert!(r.doc.redefined, "cross-signer overwrite must flag");
+        let redefs = redefinitions(&c);
+        assert!(
+            redefs.iter().any(|x| x.sid == sid),
+            "journal annotation must see the whitespace variant"
+        );
+    }
+
+    #[test]
+    fn flat_demand_survives_out_of_fragment_sibling() {
+        // Adversarial-review finding #2: a flat atom's demand is syntactic
+        // and must not be dropped because a sibling carries arithmetic.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(given task-m1)");
+        f.assert_spl(1, "(normally r2 (and dep2-m1 (p (+ ?x 1))) goal2-m1)");
+        let v = view(&f.close());
+        assert!(
+            v.demands
+                .iter()
+                .any(|d| display_literal(&d.literal) == "dep2-m1"),
+            "flat sibling demand must survive: {:?}",
+            v.demands
+                .iter()
+                .map(|d| display_literal(&d.literal))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(row(&v, "legacy", "dep2").class, Class::Hole);
+    }
+
+    #[test]
+    fn malformed_ord_uses_raw_functor() {
+        // Adversarial-review finding #6: escaping is not injective; two
+        // distinct raw functors whose escaped forms collide must stay
+        // distinct families under Ord (else the view BTreeMap merges them).
+        use spindle_core::mode::Mode;
+        use spindle_core::temporal::Temporal;
+        let raw = Literal::new(
+            "a\u{1}b",
+            false,
+            Mode::default(),
+            Temporal::default(),
+            vec!["x".into()],
+        );
+        let spelled = Literal::new(
+            "a\\u{0001}b",
+            false,
+            Mode::default(),
+            Temporal::default(),
+            vec!["x".into()],
+        );
+        let f1 = family(&raw, &no_tasks());
+        let f2 = family(&spelled, &no_tasks());
+        // `a\u{0001}b` spelled out is a LEGAL flat functor → Legacy, so
+        // kinds already differ; the Ord check matters for two Malformed
+        // raws that escape to the same bytes.
+        let m1 = Family::Malformed("a\u{1}b".into());
+        let m2 = Family::Malformed("a\\u{0001}b".into());
+        assert_eq!(m1.rendered(), m2.rendered(), "escape collision fixture");
+        assert_ne!(m1.cmp(&m2), std::cmp::Ordering::Equal);
+        assert_ne!(f1, f2);
     }
 }

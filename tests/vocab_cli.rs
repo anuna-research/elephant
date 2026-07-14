@@ -202,6 +202,12 @@ fn define_refusals_exit_3_and_store_nothing() {
     refuse(&env, &["define", "p/1", "--desc", "d", "--kind", "control"]);
     refuse(&env, &["define", "p/1", "--desc", "d", "--kind", "bogus"]);
     refuse(&env, &["define", "p/1", "--desc", "say \"hi\""]);
+    // --asserter is embedded in a quoted SPL atom too (§8 injection).
+    refuse(
+        &env,
+        &["define", "p/1", "--desc", "d", "--asserter", "a\"b"],
+    );
+    refuse(&env, &["define", "p/1", "--desc", "d", "--asserter", "a;b"]);
     refuse(&env, &["define", "p/1"]);
 }
 
@@ -289,4 +295,41 @@ fn vocab_documenter_provenance() {
             .starts_with("did:crdt:"),
         "documenter must be the signer DID"
     );
+}
+
+/// TEST-408 (cross-process determinism): two separate binary invocations
+/// of `vocab --json` over the same corpus are byte-identical — any
+/// HashMap-iteration order leaking into the output would differ across
+/// process hash seeds with high probability.
+#[test]
+fn vocab_json_identical_across_processes() {
+    let env = Env::new();
+    env.setup_theory();
+    env.json(&["assert", "(given task-m1)", "-t", "release"]);
+    env.json(&[
+        "assert",
+        "(normally r-verified (and (ci-green ?t) (review-approved ?t)) (verified ?t))",
+        "-t",
+        "release",
+    ]);
+    env.json(&["assert", "(given (review-approved m1))", "-t", "release"]);
+    env.json(&[
+        "define",
+        "ci-green/1",
+        "--desc",
+        "CI green",
+        "-t",
+        "release",
+    ]);
+    env.json(&["assert", "deploy-thing", "-t", "release"]);
+    let run = || {
+        let out = env
+            .cmd()
+            .args(["vocab", "-t", "release", "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert_eq!(run(), run(), "vocab --json must be process-deterministic");
 }

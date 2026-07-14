@@ -264,3 +264,27 @@ fn advisory_direct_mode_and_stderr() {
         "candidate expected on stderr: {stderr}"
     );
 }
+
+/// NFR-402 cold cache: the first daemon-served append has no reference
+/// view yet — the append proceeds and no advisory is emitted.
+#[test]
+fn advisory_cold_cache_degrades_to_none() {
+    let e = Env::new();
+    // Corpus written BEFORE the daemon starts (direct mode).
+    e.ok(&[
+        "assert",
+        "(normally rc ci-green-c1 verified-c1)",
+        "-t",
+        "release",
+    ]);
+    e.json(&["daemon", "start"]);
+    // First append through the fresh daemon: cache is cold for this theory.
+    let v = e.assert_json("stray-cold-note");
+    assert!(
+        v.get("advisory").is_none(),
+        "cold cache must degrade to no advisory, got {v}"
+    );
+    // The append itself landed and warmed the cache; the next one advises.
+    let v2 = e.assert_json("stray-cold-note-2");
+    assert!(v2.get("advisory").is_some(), "warm cache advises: {v2}");
+}
