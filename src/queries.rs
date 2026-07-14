@@ -477,7 +477,8 @@ pub fn trace(ctx: &Ctx) -> AppResult<()> {
     Ok(())
 }
 
-// Re-export for board/next (SPEC-003, task-layer task).
+// Positive conclusions as (display, type) pairs — used by p2p membership
+// derivation and the join ceremony.
 pub fn conclusions_positive(v: &View) -> Vec<(String, ConclusionType)> {
     closure::presentable(&v.closure.conclusions)
         .filter(|c| c.conclusion_type.is_positive() && !c.literal.negation)

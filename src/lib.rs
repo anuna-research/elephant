@@ -20,7 +20,6 @@ pub mod p2p;
 pub mod paths;
 pub mod queries;
 pub mod store;
-pub mod tasks;
 
 /// Placeholder entry point wiring; replaced as IMPL-001 tasks land.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
