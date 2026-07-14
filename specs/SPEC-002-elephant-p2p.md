@@ -1,10 +1,10 @@
 ---
 id: SPEC-002
 title: elephant p2p — daemon, SPAKE2 join, pkarr discovery, Loro sync
-version: 0.1.2
+version: 0.1.3
 status: implementing
 date: 2026-07-11
-last-updated: 2026-07-11
+last-updated: 2026-07-14
 audience: agent, human reviewer
 ---
 
@@ -319,6 +319,24 @@ request; pushes only on watch streams. Error model: JSON error object,
 Implements: [[#REQ-102]] [[#REQ-109]]. Verified by: [[#TEST-102]]
 [[#TEST-113]] (fuzz).
 
+**Append advisory extension** (0.1.3;
+[[SPEC-005-elephant-vocabulary#REQ-406]]). The
+`POST /v1/theories/{id}/entries` append **request** body gains an
+OPTIONAL `advice` boolean, defaulted `true` via `#[serde(default)]`
+(a client's `--no-advice` sends `false`; omission preserves the
+pre-advisory behaviour). Its **response** body gains an OPTIONAL
+`advisory` object — present only when a single-fact append triggers a
+near-miss ([[SPEC-005-elephant-vocabulary#CON-403]] shape), absent
+otherwise. The daemon evaluates the advisory against its cached
+reference view ([[SPEC-005-elephant-vocabulary#NFR-402]]) **before**
+applying the append. Both fields are additive and
+`deny_unknown_fields`-clean: an older client omits `advice` and ignores
+an absent `advisory`. The advisory SHALL NOT change the append's success,
+HTTP status, or entry count, and any failure of its computation degrades
+to an absent `advisory`, never a failed append
+([[SPEC-005-elephant-vocabulary#REQ-406]] degradation clause). Verified
+by: [[SPEC-005-elephant-vocabulary#TEST-406]].
+
 #### CON-102: Invite code
 
 ```abnf
@@ -404,6 +422,16 @@ structured audit line (invite id, outcome, no secrets).
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.3 — [[#CON-101]] append contract extended (additively) to carry the
+  [[SPEC-005-elephant-vocabulary#REQ-406]] near-miss advisory: an OPTIONAL
+  `advice` request boolean (`#[serde(default)]`, `--no-advice` → `false`)
+  and an OPTIONAL `advisory` response object evaluated against the daemon's
+  cached reference view before the append is applied. Both fields are
+  `deny_unknown_fields`-clean and change neither the append's success nor
+  its entry count. **Code follow-up (implementing):** `AppendBody` and the
+  append response in `src/daemon/api.rs` must gain these fields to satisfy
+  the contract.
 
 - 0.1.2 — two-daemon loopback e2e added (tests/sync_live.rs, [[#TEST-115]]):
   the composed sync loops over live iroh QUIC on 127.0.0.1, addresses
