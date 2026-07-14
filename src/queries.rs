@@ -181,13 +181,64 @@ pub fn explain(ctx: &Ctx, literal: &str) -> AppResult<()> {
     Ok(())
 }
 
-// ── why-not (REQ-012) ───────────────────────────────────────────────────
+// ── why-not (REQ-012; SPEC-005 REQ-405 docs join) ───────────────────────
+
+/// SPEC-005 REQ-405: the docs object for every *documented* family among
+/// the given literals — corpus documentation and built-in registry alike.
+/// Undocumented families are omitted, so output stays byte-identical to
+/// the pre-405 shape when nothing is documented. `documenter`/`redefined`
+/// deliberately omitted (provenance lives in the vocab view).
+fn docs_join<'a>(
+    vv: &crate::core::vocab::VocabView,
+    lits: impl Iterator<Item = &'a Literal>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    // Process legacy before predicate so that in the (pathological) case
+    // of a flat atom spelled like an indicator sharing a rendered key with
+    // a documented predicate family, the predicate entry wins
+    // deterministically; the family_kind field carries the discriminant.
+    let mut fams: Vec<crate::core::vocab::Family> = lits
+        .map(|l| crate::core::vocab::family(l, &vv.tasks))
+        .collect();
+    fams.sort();
+    fams.reverse();
+    fams.dedup();
+    for fam in fams {
+        let row = vv.rows.iter().find(|r| r.family == fam);
+        let Some(row) = row else { continue };
+        let Some(desc) = &row.doc.description else {
+            continue;
+        };
+        let mut o = serde_json::Map::new();
+        o.insert("family_kind".into(), fam.kind().into());
+        o.insert("description".into(), desc.clone().into());
+        if let Some(k) = &row.doc.kind {
+            o.insert("kind".into(), k.clone().into());
+        }
+        if let Some(a) = &row.doc.asserter {
+            o.insert("asserter".into(), a.clone().into());
+        }
+        o.insert("built_in".into(), row.built_in.into());
+        out.insert(fam.rendered(), o.into());
+    }
+    out
+}
+
+/// The description a literal's family carries, if documented (text mode).
+fn doc_of<'a>(vv: &'a crate::core::vocab::VocabView, l: &Literal) -> Option<&'a str> {
+    let fam = crate::core::vocab::family(l, &vv.tasks);
+    vv.rows
+        .iter()
+        .find(|r| r.family == fam)
+        .and_then(|r| r.doc.description.as_deref())
+}
 
 pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
     let r = spindle_core::query::why_not(&v.closure.theory, &lit)
         .map_err(|e| AppError::Reasoner(e.to_string()))?;
+    let vv = crate::core::vocab::view(&v.closure);
     if ctx.json {
         let blocked: Vec<_> = r
             .blocked_by
@@ -202,17 +253,31 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::json!({"v":1, "theory": v.store.theory_id, "literal": literal,
-                "would_derive": r.would_derive, "blocked_by": blocked})
+        let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "literal": literal,
+            "would_derive": r.would_derive, "blocked_by": blocked});
+        let docs = docs_join(
+            &vv,
+            r.blocked_by.iter().flat_map(|b| b.missing_literals.iter()),
         );
+        if !docs.is_empty() {
+            obj["docs"] = docs.into();
+        }
+        println!("{obj}");
     } else {
         if r.blocked_by.is_empty() {
             println!("no rule concludes {literal} — nothing to block");
         }
         for b in &r.blocked_by {
             println!("rule {}: {}", b.rule_label, b.explanation);
+            for m in &b.missing_literals {
+                if let Some(desc) = doc_of(&vv, m) {
+                    println!(
+                        "  {} — {}",
+                        lit_display(m),
+                        crate::core::vocab::escape_controls(desc)
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -225,11 +290,15 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
     let lit = parse_literal(literal)?;
     let r = spindle_core::query::abduce(&v.closure.theory, &lit, 8)
         .map_err(|e| AppError::Reasoner(e.to_string()))?;
+    let vv = crate::core::vocab::view(&v.closure);
     let already = r.solutions.iter().any(|s| s.is_already_provable());
-    let solutions: Vec<Vec<String>> = r
+    let open: Vec<&spindle_core::query::AbductionSolution> = r
         .solutions
         .iter()
         .filter(|s| !s.is_already_provable())
+        .collect();
+    let solutions: Vec<Vec<String>> = open
+        .iter()
         .map(|s| {
             let mut f: Vec<String> = s.facts.iter().map(lit_display).collect();
             f.sort();
@@ -237,19 +306,37 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
         })
         .collect();
     if ctx.json {
-        println!(
-            "{}",
-            serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
-                "already_provable": already, "solutions": solutions})
-        );
+        let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
+            "already_provable": already, "solutions": solutions});
+        let docs = docs_join(&vv, open.iter().flat_map(|s| s.facts.iter()));
+        if !docs.is_empty() {
+            obj["docs"] = docs.into();
+        }
+        println!("{obj}");
     } else if already {
         println!("{literal} is already provable");
     } else if solutions.is_empty() {
         println!("no fact set found that would prove {literal} (bounded search)");
     } else {
         println!("provable if all added:");
-        for s in &solutions {
-            println!("  {}", s.join("  "));
+        for s in &open {
+            let rendered: Vec<String> = {
+                let mut f: Vec<String> = s
+                    .facts
+                    .iter()
+                    .map(|l| match doc_of(&vv, l) {
+                        Some(d) => format!(
+                            "{} — {}",
+                            lit_display(l),
+                            crate::core::vocab::escape_controls(d)
+                        ),
+                        None => lit_display(l),
+                    })
+                    .collect();
+                f.sort();
+                f
+            };
+            println!("  {}", rendered.join("  "));
         }
     }
     Ok(())

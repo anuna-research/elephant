@@ -241,3 +241,93 @@ fn describe_and_trace_are_flat() {
         .assert()
         .failure();
 }
+
+// ── SPEC-005 TEST-405: docs join in why-not / require ───────────────────
+
+/// Documented and built-in families join why-not/require output; the docs
+/// object carries family_kind/description/kind/asserter/built_in and
+/// never leaks provenance fields.
+#[test]
+fn test_405_docs_join() {
+    let e = Env::new();
+    // Ground-instance rule: spindle's why-not surfaces exact ground missing
+    // literals for it. (A variable-headed rule is not unified against a
+    // ground goal by spindle's why-not/require today — recorded discovery,
+    // IMPL-005; REQ-405 joins whatever those surfaces return.)
+    e.ok(&[
+        "assert",
+        "(normally r-verified (and (ci-green m1) (review-approved m1)) (verified m1))",
+        "-t",
+        "release",
+    ]);
+    e.ok(&["assert", "(given (review-approved m1))", "-t", "release"]);
+    e.ok(&[
+        "define",
+        "ci-green/1",
+        "--desc",
+        "CI pipeline green for task ?t",
+        "--kind",
+        "evidence",
+        "--asserter",
+        "role:ci",
+        "-t",
+        "release",
+    ]);
+
+    let w = e.json(&["why-not", "(verified m1)", "-t", "release"]);
+    let docs = &w["docs"]["ci-green/1"];
+    assert_eq!(docs["family_kind"], "predicate");
+    assert_eq!(docs["description"], "CI pipeline green for task ?t");
+    assert_eq!(docs["kind"], "evidence");
+    assert_eq!(docs["asserter"], "role:ci");
+    assert_eq!(docs["built_in"], false);
+    assert!(docs.get("documenter").is_none(), "no provenance leak");
+    assert!(docs.get("redefined").is_none(), "no provenance leak");
+
+    let r = e.json(&["require", "(verified m1)", "-t", "release"]);
+    assert_eq!(
+        r["docs"]["ci-green/1"]["description"],
+        "CI pipeline green for task ?t"
+    );
+}
+
+/// Built-in registry entries join too (fixed description, built_in true).
+#[test]
+fn test_405_builtin_docs_join() {
+    let e = Env::new();
+    e.ok(&["assert", "(given task-m1)", "-t", "release"]);
+    e.ok(&[
+        "assert",
+        "(normally r-done (and completed-m1 verified-m1) all-done-m1)",
+        "-t",
+        "release",
+    ]);
+    let w = e.json(&["why-not", "all-done-m1", "-t", "release"]);
+    let docs = &w["docs"];
+    assert_eq!(docs["completed"]["built_in"], true);
+    assert_eq!(
+        docs["completed"]["description"],
+        "task is finished (given fact; lifecycle terminal)"
+    );
+    assert_eq!(docs["verified"]["family_kind"], "legacy");
+}
+
+/// Undocumented families leave the output byte-identical to the pre-405
+/// shape: no docs key at all.
+#[test]
+fn test_405_undocumented_shape_unchanged() {
+    let e = Env::new();
+    e.ok(&[
+        "assert",
+        "(normally r zz-undocumented-thing yy-goal)",
+        "-t",
+        "release",
+    ]);
+    let w = e.json(&["why-not", "yy-goal", "-t", "release"]);
+    assert!(
+        w.get("docs").is_none(),
+        "no docs key when nothing documented"
+    );
+    let r = e.json(&["require", "yy-goal", "-t", "release"]);
+    assert!(r.get("docs").is_none());
+}
