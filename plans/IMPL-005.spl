@@ -93,3 +93,35 @@
 (normally r-assign-log-annotation (and ready-log-annotation agent-claude-available) assign-to-log-annotation-claude)
 (normally r-assign-determinism (and ready-determinism agent-claude-available) assign-to-determinism-claude)
 (normally r-assign-finish (and ready-finish agent-claude-available) assign-to-finish-claude)
+
+(claims agent:claude
+  :at "2026-07-14T13:24:18Z"
+  (given claim-v1-vocab-core)
+  (normally r-cl-state-v1-vocab-core claim-v1-vocab-core state-claimed-v1-vocab-core)
+  (normally r-cl-chain-v1-vocab-core state-claimed-v1-vocab-core claimed-vocab-core)
+)
+
+;; Propagation rules: failures in 'vocab-core' block downstream tasks
+(normally r-propagate-define-from-vocab-core-failed failed-vocab-core upstream-blocked-define)
+(normally r-propagate-define-from-vocab-core-permanently-failed permanently-failed-vocab-core upstream-blocked-define)
+(normally r-propagate-define-from-vocab-core-stale-v1 stale-v1-vocab-core upstream-blocked-define)
+(normally r-propagate-define-from-vocab-core-timeout-v1 timeout-v1-vocab-core upstream-blocked-define)
+(normally r-propagate-define-from-vocab-core-blocked upstream-blocked-vocab-core upstream-blocked-define)
+(normally r-propagate-vocab-docs-from-vocab-core-failed failed-vocab-core upstream-blocked-vocab-docs)
+(normally r-propagate-vocab-docs-from-vocab-core-permanently-failed permanently-failed-vocab-core upstream-blocked-vocab-docs)
+(normally r-propagate-vocab-docs-from-vocab-core-stale-v1 stale-v1-vocab-core upstream-blocked-vocab-docs)
+(normally r-propagate-vocab-docs-from-vocab-core-timeout-v1 timeout-v1-vocab-core upstream-blocked-vocab-docs)
+(normally r-propagate-vocab-docs-from-vocab-core-blocked upstream-blocked-vocab-core upstream-blocked-vocab-docs)
+
+;; Transitive propagation: upstream-blocked cascades through dependency chain
+(normally r-propagate-determinism-from-define-blocked upstream-blocked-define upstream-blocked-determinism)
+(normally r-propagate-docs-join-from-vocab-docs-blocked upstream-blocked-vocab-docs upstream-blocked-docs-join)
+(normally r-propagate-log-annotation-from-vocab-docs-blocked upstream-blocked-vocab-docs upstream-blocked-log-annotation)
+(normally r-propagate-vocab-view-from-vocab-docs-blocked upstream-blocked-vocab-docs upstream-blocked-vocab-view)
+(normally r-propagate-finish-from-determinism-blocked upstream-blocked-determinism upstream-blocked-finish)
+(normally r-propagate-finish-from-docs-join-blocked upstream-blocked-docs-join upstream-blocked-finish)
+(normally r-propagate-finish-from-log-annotation-blocked upstream-blocked-log-annotation upstream-blocked-finish)
+(normally r-propagate-advisory-from-vocab-view-blocked upstream-blocked-vocab-view upstream-blocked-advisory)
+(normally r-propagate-vocab-cli-from-vocab-view-blocked upstream-blocked-vocab-view upstream-blocked-vocab-cli)
+(normally r-propagate-finish-from-advisory-blocked upstream-blocked-advisory upstream-blocked-finish)
+(normally r-propagate-determinism-from-vocab-cli-blocked upstream-blocked-vocab-cli upstream-blocked-determinism)
