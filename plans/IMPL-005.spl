@@ -275,3 +275,7 @@
   (normally r-cl-state-v1-finish claim-v1-finish state-claimed-v1-finish)
   (normally r-cl-chain-v1-finish state-claimed-v1-finish claimed-finish)
 )
+
+(claims agent:claude
+  :at "2026-07-14T14:51:08Z"
+  (given completed-finish))
