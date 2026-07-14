@@ -1,0 +1,95 @@
+;; elephant-3000 — SPEC-005 vocabulary layer implementation plan (hence)
+;;
+;; Executes SPEC-005 0.5.0 (predicate vocabulary: introspection, documentation,
+;; coining) on branch spec-005-vocab-impl. Composes spindle SPEC-024
+;; (PredicateSymbol, Vocabulary::derive, MetaTarget::Predicate) per ADR-402.
+;; Acceptance criteria come from SPEC-005 TEST-401..TEST-408.
+
+(meta plan
+  (id "IMPL-005")
+  (title "SPEC-005 elephant vocabulary implementation")
+  (version "0.1.0")
+  (status "active")
+  (created "2026-07-14")
+  (author "hugo.oconnor@gmail.com")
+  (description "Implement elephant vocab and define verbs, docs join, daemon near-miss advisory, and redefinition provenance per SPEC-005-elephant-vocabulary 0.5.0 — a projection layer composed over spindle SPEC-024, never touching admission or closure."))
+
+(given agent-claude-available)
+
+;; ─── tasks ──────────────────────────────────────────────────
+(given task-vocab-core)      ;; CON-402 Family resolver + REQ-404 built-in registry (pure core)
+(given task-vocab-docs)      ;; REQ-402 per-key LWW docs conformance + REQ-407 provenance pass (pure core)
+(given task-vocab-view)      ;; REQ-401 roles, hole/orphan/active demand join, detached, CON-403 rows (pure core)
+(given task-vocab-cli)       ;; ADR-405 elephant vocab verb, text + --json
+(given task-define)          ;; REQ-403 define verb + CON-401 argv recogniser, exit-3 refusals
+(given task-docs-join)       ;; REQ-405 why-not/require docs object
+(given task-advisory)        ;; REQ-406 daemon advisory + SPEC-002 CON-101 advice control + OBS-401
+(given task-log-annotation)  ;; REQ-407 log overwrite annotation + OBS-402
+(given task-determinism)     ;; TEST-408 shuffle property + NFR-401 bench
+(given task-finish)          ;; README, user docs, spec status, zetl gate, adversarial review
+
+(given no-deps-vocab-core)
+
+(meta task-vocab-core
+  (description "src/core/vocab.rs pure module. Family enum Predicate(PredicateSymbol) or Legacy(String) or Malformed(String) with family(lit, tasks) resolver — rule 1 arity>=1 via spindle predicate_symbol with Err to Malformed, rule 2 built-in ground patterns, rule 3 longest declared-task suffix, rule 4 bare atom. Built-in registry: closed functor-level table with fixed descriptions and kinds from REQ-404. tasks set derived from closure provable task-X conclusions.")
+  (acceptance "Unit tests for TEST-401 collision rows (predicate p/1 vs flat atom spelled p/1 distinct), TEST-404 legacy resolutions (claim-v3-m1 to claim, agent-alice-available to agent-available, no-deps-x to no-deps, unlisted deploy-v3-m1 not built-in), malformed functor to distinct Malformed families, arity-0 never rule 1. cargo test green.")
+  (source "SPEC-005-elephant-vocabulary#CON-402"))
+(meta task-vocab-docs
+  (description "Per-key documentation record over the merged admitted corpus: CON-401 value conformance checked per key (description 1-512 bytes no C0/C1, kind enum evidence/state/discovery, asserter 1-128 bytes), malformed keys surfaced and treated absent, per-key LWW in canonical hlc-signer order, rule-label precedence for legacy label carrier only, built-in freeze (predicate-meta and label-meta on built-in functor ignored). REQ-407 provenance: documenter = signer of latest conforming description Entry, redefined = two or more distinct signers, tombstoned and quarantined never count.")
+  (acceptance "Unit tests for TEST-402 rows: predicate-target and inline declaration docs keyed on symbol, label carrier for legacy stems, rule-label shadow only on legacy path, tombstone reverts winner, one bogus key does not undocument family. TEST-407 units: second signer flips redefined, same-signer retract-redefine does not.")
+  (source "SPEC-005-elephant-vocabulary#REQ-402"))
+(meta task-vocab-view
+  (description "VocabView assembly: compose spindle Vocabulary::derive occurrence roles Head/Body, re-group arity-0 symbols through legacy resolver, synthesize goal role from admitted non-retracted commitments and requests, fact role refines Head by rule type. Classification: demanded ground instances = flat body/goal atoms plus witness-join templates where every sibling body literal proven under sigma, hole = body-or-goal role with no non-fact head and an unproven demanded instance, orphan = fact-only not built-in not discovery-documented, out-of-fragment cases active. detached = documented family joining no occurrence-projected family. CON-403 row shape and orderings.")
+  (acceptance "Unit and integration tests for TEST-401 positive rows: witness join hole (review-approved m1 proven binds t, ci-green m1 unproven makes ci-green/1 hole), witness-less template active not hole, mixed corpus two verified rows both built-in, detached flag per occurrence-join, malformed row never dropped. Negative-output rows fail correctly.")
+  (source "SPEC-005-elephant-vocabulary#REQ-401"))
+(meta task-vocab-cli
+  (description "elephant vocab -t theory flat verb: run closure pipeline, print one row per family with kind, roles, class, built-in marker, docs with malformed markers, documenter, redefined, detached. --json per CON-403 with pinned orderings, kind order predicate legacy malformed then byte-lex family. Peer-controlled bytes escaped on display.")
+  (acceptance "tests/vocab_cli.rs runs vocab against corpora from TEST-401 and TEST-404 tables, JSON keyed on kind-family pair, ordering pinned, daemon status counter vocab_views_served increments.")
+  (source "SPEC-005-elephant-vocabulary#ADR-405"))
+(meta task-define
+  (description "elephant define functor/arity --desc --kind --asserter --arg name:sort flat verb. Full CON-401 recognition before signing: spindle parse_predicate_indicator, arity >= 1 no leading zero within u32, functor LDH alias grammar, built-in functor collision refused at any arity, desc and asserter byte caps and control-char exclusion, kind enumeration, arg count equals arity with unique names and primitive sorts. On success append one signed assert Entry: predicate declaration payload when --arg given else meta predicate target, print sentence-id receipt. Exit 3 on refusal with nothing signed or stored.")
+  (acceptance "TEST-403 CLI rows: happy define produces Entry and view row keyed on symbol, define with declared task green still succeeds, every negative-input row exits 3 with corpus+0 including foo/0, x/01, x/4294967296, built-in collisions define completed/1 commitment-state/2 verified/2.")
+  (source "SPEC-005-elephant-vocabulary#REQ-403"))
+(meta task-docs-join
+  (description "why-not and require join each missing or abduced literal to its family docs — corpus documented and built-in alike. Text appends description after literal. JSON gains docs object mapping family to family_kind, description, kind, asserter, built_in — documenter and redefined omitted. Undocumented families leave output byte-identical to pre-405 shape.")
+  (acceptance "TEST-405 rows in tests/queries_cli.rs: documented and built-in families joined, undocumented byte-identical, no documenter leak.")
+  (source "SPEC-005-elephant-vocabulary#REQ-405"))
+(meta task-advisory
+  (description "REQ-406 near-miss advisory. Daemon AppState caches the Closure per theory refreshed in recompute_and_notify. Append request body gains advice boolean serde default true, response gains optional advisory object per CON-403. Daemon evaluates single-fact appends against the cached pre-append view: inert-family advisory when family has no body or goal role and is not built-in and not discovery-documented, sibling advisory when asserted literal is not a demanded instance while a same-family demanded-but-unproven sibling exists — sibling ranked first and never dropped by the 5 cap, remaining slots argument-sharing then byte-lex then listener label. Candidates carry listener labels. Advisory never changes exit code or blocks append, computation failure degrades to absent advisory, cold cache emits none. CLI assert gains --no-advice, prints advisory to stderr in text mode and passes object through in --json. OBS-401 tracing plus daemon status counters advisories_emitted and vocab_views_served.")
+  (acceptance "TEST-406 rows in tests/daemon_cli.rs: inert and sibling advisories fire on daemon path, parameterised witness case names ci-green m1, sibling retained under cap against 5 unrelated argument-sharing holes, --no-advice and direct mode and rule payload and negated-body and discovery and built-in emit none, commitment-goal assert emits none, exit codes unchanged.")
+  (source "SPEC-005-elephant-vocabulary#REQ-406"))
+(meta task-log-annotation
+  (description "elephant log annotates an Entry that overwrites another signer's winning value for any CON-401 key with family name, key, previous writer. OBS-402 tracing event at view time.")
+  (acceptance "TEST-407 CLI rows: cross-signer overwrite annotated in log text and JSON, same-signer update not annotated, quarantined entries never count.")
+  (source "SPEC-005-elephant-vocabulary#REQ-407"))
+(meta task-determinism
+  (description "TEST-408: proptest shuffled corpus yields byte-identical vocab --json including per-key LWW winners. Criterion bench vocab view within NFR-001 closure budget plus 50 ms. Verify no closure evaluation added to any producer path — direct-store assert untouched per NFR-402.")
+  (acceptance "Property test green under proptest, bench within budget, code inspection confirms producer paths free of closure calls.")
+  (source "SPEC-005-elephant-vocabulary#TEST-408"))
+(meta task-finish
+  (description "README and user docs updated for vocab and define and advisory. SPEC-005 status to implemented with changelog entry. zetl check dead links gate. Fresh-context adversarial code review per Constitutional Principle 12, findings resolved or filed as BUG artefacts.")
+  (acceptance "make check green, zetl check --fail-on error clean, review findings dispositioned, spec status implemented."))
+
+;; ─── readiness ──────────────────────────────────────────────
+(normally r-ready-vocab-core (and task-vocab-core no-deps-vocab-core) ready-vocab-core)
+(normally r-ready-vocab-docs (and task-vocab-docs completed-vocab-core) ready-vocab-docs)
+(normally r-ready-vocab-view (and task-vocab-view completed-vocab-docs) ready-vocab-view)
+(normally r-ready-vocab-cli (and task-vocab-cli completed-vocab-view) ready-vocab-cli)
+(normally r-ready-define (and task-define completed-vocab-core) ready-define)
+(normally r-ready-docs-join (and task-docs-join completed-vocab-docs) ready-docs-join)
+(normally r-ready-advisory (and task-advisory completed-vocab-view) ready-advisory)
+(normally r-ready-log-annotation (and task-log-annotation completed-vocab-docs) ready-log-annotation)
+(normally r-ready-determinism (and task-determinism completed-vocab-cli completed-define) ready-determinism)
+(normally r-ready-finish (and task-finish completed-determinism completed-docs-join completed-advisory completed-log-annotation) ready-finish)
+
+;; ─── assignment ─────────────────────────────────────────────
+(normally r-assign-vocab-core (and ready-vocab-core agent-claude-available) assign-to-vocab-core-claude)
+(normally r-assign-vocab-docs (and ready-vocab-docs agent-claude-available) assign-to-vocab-docs-claude)
+(normally r-assign-vocab-view (and ready-vocab-view agent-claude-available) assign-to-vocab-view-claude)
+(normally r-assign-vocab-cli (and ready-vocab-cli agent-claude-available) assign-to-vocab-cli-claude)
+(normally r-assign-define (and ready-define agent-claude-available) assign-to-define-claude)
+(normally r-assign-docs-join (and ready-docs-join agent-claude-available) assign-to-docs-join-claude)
+(normally r-assign-advisory (and ready-advisory agent-claude-available) assign-to-advisory-claude)
+(normally r-assign-log-annotation (and ready-log-annotation agent-claude-available) assign-to-log-annotation-claude)
+(normally r-assign-determinism (and ready-determinism agent-claude-available) assign-to-determinism-claude)
+(normally r-assign-finish (and ready-finish agent-claude-available) assign-to-finish-claude)

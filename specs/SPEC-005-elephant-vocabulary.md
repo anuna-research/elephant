@@ -2,7 +2,7 @@
 id: SPEC-005
 title: elephant — predicate vocabulary: introspection, documentation, coining
 version: 0.5.0
-status: draft
+status: implementing
 date: 2026-07-13
 last-updated: 2026-07-14
 audience: agent, human reviewer
@@ -1228,6 +1228,11 @@ all member spam by roster membership and trust weighting
 
 <details>
 <summary>Revision history — 0.1.0 → 0.5.0</summary>
+
+- 0.5.0 (implementing) — Phase 3 begun on stakeholder direction
+  (2026-07-14, HOC): implementation plan [[IMPL-005]]
+  (`plans/IMPL-005.spl`), branch `spec-005-vocab-impl`. No normative
+  change.
 
 - 0.5.0 (draft) — **reviewer round applied (8 findings, 3 blocking).**
   (#1, High) [[#CON-402]] `family` now returns a **discriminated
