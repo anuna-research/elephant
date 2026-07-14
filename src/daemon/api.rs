@@ -23,6 +23,11 @@ pub struct AppState {
     started_at: std::time::Instant,
     /// last presented tags per theory, for watch diffing
     tags: Arc<Mutex<BTreeMap<String, BTreeMap<String, String>>>>,
+    /// Reference views per theory for the near-miss advisory (SPEC-005
+    /// NFR-402): a projection of the same cached closure the change watch
+    /// uses, refreshed once per merged batch — never computed on the
+    /// producer path. Cold (absent) → no advisory, never a delayed append.
+    views: Arc<Mutex<BTreeMap<String, Arc<crate::core::vocab::VocabView>>>>,
     events: tokio::sync::broadcast::Sender<WatchEvent>,
     counters: Arc<Mutex<Counters>>,
     /// Serialises store writes: the daemon is the single writer (REQ-102),
@@ -36,6 +41,9 @@ struct Counters {
     entries_merged: u64,
     quarantined: u64,
     closures_run: u64,
+    /// SPEC-005 OBS-401 / SPEC-001 OBS-002 extension.
+    advisories_emitted: u64,
+    vocab_views_served: u64,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -59,6 +67,7 @@ pub fn serve(paths: Paths, ident: Identity, lock: super::DaemonLock) -> AppResul
             token: token.clone(),
             started_at: std::time::Instant::now(),
             tags: Arc::new(Mutex::new(BTreeMap::new())),
+            views: Arc::new(Mutex::new(BTreeMap::new())),
             events,
             counters: Arc::new(Mutex::new(Counters::default())),
             write_gate: Arc::new(Mutex::new(())),
@@ -185,15 +194,26 @@ async fn status(
                 "entries_merged": c.entries_merged,
                 "quarantined": c.quarantined,
                 "closures_run": c.closures_run,
+                "advisories_emitted": c.advisories_emitted,
+                "vocab_views_served": c.vocab_views_served,
             },
         })),
     )
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AppendBody {
     entries: Vec<Entry>,
+    /// SPEC-002 CON-101 append advisory extension (0.1.3): enabled by
+    /// default; a client's `--no-advice` sends `false`; omission preserves
+    /// the pre-advisory body shape.
+    #[serde(default = "default_true")]
+    advice: bool,
 }
 
 async fn append_entries(
@@ -226,19 +246,95 @@ async fn append_entries(
     };
     let state2 = state.clone();
     let theory2 = theory.clone();
-    let res = tokio::task::spawn_blocking(move || merge_and_close(&state2, &theory2, &req.entries))
-        .await
-        .unwrap_or_else(|e| Err(AppError::Internal(format!("join: {e}"))));
+    let res = tokio::task::spawn_blocking(move || {
+        // SPEC-005 REQ-406: evaluate the advisory against the reference
+        // view *before* applying the append (it must reflect exactly the
+        // entries preceding this one); any failure degrades to None.
+        let advisory = if req.advice {
+            compute_advisory(&state2, &theory2, &req.entries)
+        } else {
+            None
+        };
+        merge_and_close(&state2, &theory2, &req.entries).map(|n| (n, advisory))
+    })
+    .await
+    .unwrap_or_else(|e| Err(AppError::Internal(format!("join: {e}"))));
     match res {
-        Ok(n) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"v":1, "appended": n, "theory": theory})),
-        ),
+        Ok((n, advisory)) => {
+            let mut obj = serde_json::json!({"v":1, "appended": n, "theory": theory});
+            if let Some(a) = advisory {
+                obj["advisory"] = a;
+            }
+            (StatusCode::OK, Json(obj))
+        }
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": e.code(), "detail": e.to_string()})),
         ),
     }
+}
+
+/// REQ-406 preconditions + evaluation: a single pre-signed Entry whose act
+/// is an assert whose payload's sole form is a fact, served from the cached
+/// reference view. Everything here is best-effort — any miss returns None
+/// and never blocks or delays the append (ADR-404).
+fn compute_advisory(
+    state: &AppState,
+    theory: &str,
+    entries: &[Entry],
+) -> Option<serde_json::Value> {
+    let [entry] = entries else { return None };
+    let crate::core::envelope::SpeechAct::Assert { spl, .. } =
+        crate::core::envelope::parse_wire(&entry.cbcl).ok()?
+    else {
+        return None;
+    };
+    // Sole form is a fact: exactly one fact rule, one head, and nothing
+    // else riding in the payload (no metadata, declarations, preferences).
+    let t = spindle_parser::parse_spl(&spl).ok()?;
+    let mut rules = t.rules();
+    let fact = rules.next()?;
+    if rules.next().is_some()
+        || fact.rule_type != spindle_core::rule::RuleType::Fact
+        || fact.head.len() != 1
+        || !t.metadata().is_empty()
+        || !t.predicate_metadata().is_empty()
+        || !t.predicate_declarations().is_empty()
+    {
+        return None;
+    }
+    let lit = fact.head.first()?.clone();
+
+    // The reference view is keyed by theory id; the route may carry an
+    // alias — resolve only if the direct lookup misses.
+    let view: Arc<crate::core::vocab::VocabView> = {
+        let views = state.views.lock().unwrap();
+        match views.get(theory) {
+            Some(v) => v.clone(),
+            None => {
+                let id = TheoryStore::open(&state.paths, theory).ok()?.theory_id;
+                views.get(&id)?.clone()
+            }
+        }
+    };
+    {
+        let mut c = state.counters.lock().unwrap();
+        c.vocab_views_served += 1;
+    }
+    let advisory = crate::core::vocab::advisory(&view, &lit)?;
+    {
+        let mut c = state.counters.lock().unwrap();
+        c.advisories_emitted += 1;
+    }
+    // OBS-401: the drift signal an operator tunes vocabulary against.
+    tracing::info!(
+        theory = %theory,
+        kind = advisory.kind.name(),
+        family = %advisory.family.rendered(),
+        candidates = advisory.candidates.len(),
+        "vocab advisory emitted"
+    );
+    Some(advisory.to_json())
 }
 
 /// Append entries, recompute closure, diff tags, broadcast watch events.
@@ -272,6 +368,16 @@ fn recompute_and_notify(state: &AppState, store: &TheoryStore) -> AppResult<()> 
         let mut c = state.counters.lock().unwrap();
         c.closures_run += 1;
         c.quarantined += closure.quarantined.len() as u64;
+    }
+    // Refresh the SPEC-005 reference view on the same cycle as the tag
+    // cache (NFR-402: staleness bounded by the change-watch batch).
+    {
+        let vocab_view = crate::core::vocab::view(&closure);
+        state
+            .views
+            .lock()
+            .unwrap()
+            .insert(store.theory_id.clone(), Arc::new(vocab_view));
     }
     let new_tags: BTreeMap<String, String> = effective_tags(&closure);
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

@@ -244,6 +244,10 @@ pub enum DaemonCmd {
 pub struct AssertArgs {
     /// SPL statement, or a bare literal (sugared to `(given …)`)
     pub spl: String,
+    /// Suppress the daemon's near-miss vocabulary advisory (SPEC-005
+    /// REQ-406); the append itself is unaffected either way
+    #[arg(long = "no-advice")]
+    pub no_advice: bool,
 }
 
 #[derive(Args)]
@@ -339,7 +343,7 @@ fn dispatch(cli: Cli) -> AppResult<()> {
     match cli.command {
         Command::Id(cmd) => handle_id(&ctx, cmd),
         Command::Theory(cmd) => handle_theory(&ctx, cmd),
-        Command::Assert(args) => produce_assert(&ctx, &args.spl),
+        Command::Assert(args) => produce_assert(&ctx, &args.spl, !args.no_advice),
         Command::Retract {
             sentence_id,
             reason,
@@ -416,6 +420,16 @@ fn producer(ctx: &Ctx) -> AppResult<Producer> {
 }
 
 fn append_act(ctx: &Ctx, p: &Producer, act: SpeechAct, spl_form: &str) -> AppResult<()> {
+    append_act_with_advice(ctx, p, act, spl_form, false)
+}
+
+fn append_act_with_advice(
+    ctx: &Ctx,
+    p: &Producer,
+    act: SpeechAct,
+    spl_form: &str,
+    advice: bool,
+) -> AppResult<()> {
     let entry = Entry::create(
         &p.store.theory_id,
         p.hlc,
@@ -425,7 +439,7 @@ fn append_act(ctx: &Ctx, p: &Producer, act: SpeechAct, spl_form: &str) -> AppRes
         &p.ts,
         &p.ident.signing_key,
     );
-    route_append(ctx, &p.store, std::slice::from_ref(&entry))?;
+    let advisory = route_append(ctx, &p.store, std::slice::from_ref(&entry), advice)?;
     let receipt = match &act {
         SpeechAct::Assert { sentence_id, .. } | SpeechAct::Commit { sentence_id, .. } => {
             sentence_id.clone()
@@ -434,19 +448,39 @@ fn append_act(ctx: &Ctx, p: &Producer, act: SpeechAct, spl_form: &str) -> AppRes
         _ => Entry::sentence_id(&p.store.theory_id, &entry.signer, entry.hlc),
     };
     if ctx.json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "v": 1,
-                "receipt": receipt,
-                "theory": p.store.theory_id,
-                "signer": entry.signer,
-                "performative": act.performative(),
-                "spl_form": spl_form,
-            })
-        );
+        let mut obj = serde_json::json!({
+            "v": 1,
+            "receipt": receipt,
+            "theory": p.store.theory_id,
+            "signer": entry.signer,
+            "performative": act.performative(),
+            "spl_form": spl_form,
+        });
+        if let Some(a) = &advisory {
+            obj["advisory"] = a.clone();
+        }
+        println!("{obj}");
     } else {
         println!("{}  {}", act.performative(), receipt);
+    }
+    // REQ-406: text mode prints the advisory to stderr — advice, never a
+    // verdict; the append above already succeeded.
+    if !ctx.json
+        && let Some(a) = &advisory
+    {
+        let esc = crate::core::vocab::escape_controls;
+        let kind = a["kind"].as_str().unwrap_or("?");
+        let family = a["family"].as_str().unwrap_or("?");
+        eprintln!("advisory ({}): family {}", esc(kind), esc(family));
+        if let Some(cands) = a["candidates"].as_array() {
+            for c in cands {
+                eprintln!(
+                    "  did you mean {}?  (listener {})",
+                    esc(c["literal"].as_str().unwrap_or("?")),
+                    esc(c["listener"].as_str().unwrap_or("?")),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -474,18 +508,26 @@ pub fn append_asserts(ctx: &Ctx, stmts: &[String]) -> AppResult<usize> {
         ));
         hlc.logical += 1;
     }
-    route_append(ctx, &p.store, &entries)?;
+    route_append(ctx, &p.store, &entries, false)?;
     Ok(entries.len())
 }
 
 /// Single-writer discipline (REQ-102): a live daemon owns store writes;
-/// otherwise write directly.
-fn route_append(ctx: &Ctx, store: &TheoryStore, entries: &[Entry]) -> AppResult<()> {
+/// otherwise write directly. Returns the daemon's REQ-406 advisory when
+/// one was emitted (direct-store mode never advises — NFR-402).
+fn route_append(
+    ctx: &Ctx,
+    store: &TheoryStore,
+    entries: &[Entry],
+    advice: bool,
+) -> AppResult<Option<serde_json::Value>> {
     if let Some(rec) = live_daemon(ctx) {
-        crate::daemon::client::append(&rec, &store.theory_id, entries)?;
-        Ok(())
+        let (_n, advisory) =
+            crate::daemon::client::append(&rec, &store.theory_id, entries, advice)?;
+        Ok(advisory)
     } else {
-        store.append_batch(entries)
+        store.append_batch(entries)?;
+        Ok(None)
     }
 }
 
@@ -499,7 +541,7 @@ fn sugar_spl(input: &str) -> String {
     }
 }
 
-fn produce_assert(ctx: &Ctx, spl_in: &str) -> AppResult<()> {
+fn produce_assert(ctx: &Ctx, spl_in: &str, advice: bool) -> AppResult<()> {
     let spl = sugar_spl(spl_in);
     // Full recognition before anything is signed or stored (CON-001).
     crate::core::envelope::validate_assert_payload(&spl)
@@ -512,7 +554,7 @@ fn produce_assert(ctx: &Ctx, spl_in: &str) -> AppResult<()> {
         .next()
         .unwrap_or("?")
         .to_string();
-    append_act(
+    append_act_with_advice(
         ctx,
         &p,
         SpeechAct::Assert {
@@ -520,6 +562,7 @@ fn produce_assert(ctx: &Ctx, spl_in: &str) -> AppResult<()> {
             spl,
         },
         &spl_form,
+        advice,
     )
 }
 
@@ -810,7 +853,9 @@ fn produce_define(ctx: &Ctx, args: &DefineArgs) -> AppResult<()> {
         }
     }
 
-    produce_assert(ctx, &payload)
+    // Rule/meta payloads and all other producers emit no advisory
+    // (REQ-406) — the daemon would decline anyway; be explicit here.
+    produce_assert(ctx, &payload, false)
 }
 
 /// The sentence-id an entry's own speech act carries (if any).

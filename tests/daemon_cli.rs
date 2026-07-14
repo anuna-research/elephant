@@ -140,3 +140,127 @@ fn watch_receives_pushed_flip() {
     let _ = watcher.kill();
     let _ = watcher.wait();
 }
+
+// ── SPEC-005 TEST-406: near-miss advisory on the daemon append path ─────
+
+impl Env {
+    /// assert via --json, returning the receipt object (which may carry
+    /// the REQ-406 advisory).
+    fn assert_json(&self, spl: &str) -> serde_json::Value {
+        self.json(&["assert", spl, "-t", "release"])
+    }
+}
+
+/// Inert-family and sibling advisories ride the append receipt on the live
+/// daemon path; suppressions hold; exit codes never change.
+#[test]
+fn advisory_on_daemon_append() {
+    let e = Env::new();
+    e.json(&["daemon", "start"]);
+
+    // Warm the reference view: these merges each recompute it. They also
+    // set up the flat near-miss corpus (tasks declared so ci-green-m1/m2
+    // share the family `ci-green` — CON-402 rule 3).
+    e.assert_json("(given task-m1)");
+    e.assert_json("(given task-m2)");
+    let r = e.assert_json("(normally r ci-green-m1 verified-m1)");
+    assert!(r.get("advisory").is_none(), "rule payload never advises");
+
+    // Sibling advisory: the wrong-argument near-miss (HP-A1 shape).
+    let s = e.assert_json("ci-green-m2");
+    let adv = s.get("advisory").expect("sibling advisory in receipt");
+    assert_eq!(adv["kind"], "sibling");
+    assert_eq!(adv["family"], "ci-green");
+    assert_eq!(adv["family_kind"], "legacy");
+    assert_eq!(adv["candidates"][0]["literal"], "ci-green-m1");
+    assert_eq!(adv["candidates"][0]["listener"], "r");
+
+    // Inert-family advisory: nothing listens, not documented discovery.
+    let i = e.assert_json("random-note");
+    let adv = i.get("advisory").expect("inert advisory");
+    assert_eq!(adv["kind"], "inert-family");
+
+    // Suppressions: --no-advice, built-in (discovery vocabulary),
+    // demanded instance itself.
+    let n = e.json(&["assert", "stray-note", "--no-advice", "-t", "release"]);
+    assert!(n.get("advisory").is_none(), "--no-advice suppresses");
+    let b = e.assert_json("discovered-api-flaky");
+    assert!(b.get("advisory").is_none(), "built-in never advises");
+    let d = e.assert_json("ci-green-m1");
+    assert!(d.get("advisory").is_none(), "the demanded literal itself");
+
+    // Daemon counters surfaced (OBS-401 / SPEC-001 OBS-002 extension).
+    let st = e.json(&["daemon", "status"]);
+    assert!(st["counters"]["advisories_emitted"].as_u64().unwrap() >= 2);
+    assert!(st["counters"]["vocab_views_served"].as_u64().unwrap() >= 2);
+}
+
+/// Parameterised witness case: (review-approved m1) proven binds ?t=m1, so
+/// asserting (ci-green m2) names (ci-green m1) as the live demand.
+#[test]
+fn advisory_parameterised_witness_via_daemon() {
+    let e = Env::new();
+    e.json(&["daemon", "start"]);
+    e.assert_json("(normally r-verified (and (ci-green ?t) (review-approved ?t)) (verified ?t))");
+    e.assert_json("(given (review-approved m1))");
+    let s = e.assert_json("(given (ci-green m2))");
+    let adv = s.get("advisory").expect("sibling advisory");
+    assert_eq!(adv["kind"], "sibling");
+    assert_eq!(adv["family"], "ci-green/1");
+    assert_eq!(adv["family_kind"], "predicate");
+    assert_eq!(adv["candidates"][0]["literal"], "(ci-green m1)");
+    assert_eq!(adv["candidates"][0]["listener"], "r-verified");
+}
+
+/// Commitment goals are listeners: the canonical fulfilment assert gets no
+/// advisory; a wrong-goal assert names the commitment's goal as candidate.
+#[test]
+fn advisory_and_commitment_goals() {
+    let e = Env::new();
+    e.json(&["daemon", "start"]);
+    e.assert_json("(given warm-up)"); // warm the view
+    e.json(&[
+        "promise",
+        "legal-signed",
+        "--by",
+        "2036-01-01T00:00:00Z",
+        "-t",
+        "release",
+    ]);
+    let ok = e.assert_json("legal-signed");
+    assert!(
+        ok.get("advisory").is_none(),
+        "commitment goal is a listener and its goal literal is the demand"
+    );
+}
+
+/// Direct-store mode (no daemon) emits no advisory and text mode prints
+/// the advisory to stderr without changing the exit code.
+#[test]
+fn advisory_direct_mode_and_stderr() {
+    let e = Env::new();
+    // No daemon: direct store, no advisory ever.
+    let v = e.json(&["assert", "loner-fact", "-t", "release"]);
+    assert!(v.get("advisory").is_none());
+
+    // With a daemon, text mode: advisory on stderr, receipt on stdout,
+    // exit 0.
+    e.json(&["daemon", "start"]);
+    e.assert_json("(given task-m9)");
+    e.assert_json("(normally r9 ci-green-m9 verified-m9)");
+    let out = e
+        .cmd()
+        .args(["assert", "another-loner", "-t", "release"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "advisory must not change exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("advisory (inert-family)"),
+        "stderr advisory expected, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("ci-green-m9"),
+        "candidate expected on stderr: {stderr}"
+    );
+}

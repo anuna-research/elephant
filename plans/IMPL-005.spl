@@ -213,3 +213,37 @@
 (claims agent:claude
   :at "2026-07-14T14:00:19Z"
   (given discovered-spindle-whynot-require-no-unification-for-variable-rule-heads))
+
+(claims agent:claude
+  :at "2026-07-14T14:01:14Z"
+  (given completed-docs-join))
+
+(claims agent:claude
+  :at "2026-07-14T14:01:14Z"
+  (given claim-v1-advisory)
+  (normally r-cl-state-v1-advisory claim-v1-advisory state-claimed-v1-advisory)
+  (normally r-cl-chain-v1-advisory state-claimed-v1-advisory claimed-advisory)
+)
+
+;; Propagation rules: failures in 'advisory' block downstream tasks
+(normally r-propagate-finish-from-advisory-failed failed-advisory upstream-blocked-finish)
+(normally r-propagate-finish-from-advisory-permanently-failed permanently-failed-advisory upstream-blocked-finish)
+(normally r-propagate-finish-from-advisory-stale-v1 stale-v1-advisory upstream-blocked-finish)
+(normally r-propagate-finish-from-advisory-timeout-v1 timeout-v1-advisory upstream-blocked-finish)
+
+(claims agent:claude
+  :at "2026-07-14T14:06:24Z"
+  (given completed-advisory))
+
+(claims agent:claude
+  :at "2026-07-14T14:06:24Z"
+  (given claim-v1-log-annotation)
+  (normally r-cl-state-v1-log-annotation claim-v1-log-annotation state-claimed-v1-log-annotation)
+  (normally r-cl-chain-v1-log-annotation state-claimed-v1-log-annotation claimed-log-annotation)
+)
+
+;; Propagation rules: failures in 'log-annotation' block downstream tasks
+(normally r-propagate-finish-from-log-annotation-failed failed-log-annotation upstream-blocked-finish)
+(normally r-propagate-finish-from-log-annotation-permanently-failed permanently-failed-log-annotation upstream-blocked-finish)
+(normally r-propagate-finish-from-log-annotation-stale-v1 stale-v1-log-annotation upstream-blocked-finish)
+(normally r-propagate-finish-from-log-annotation-timeout-v1 timeout-v1-log-annotation upstream-blocked-finish)
