@@ -97,17 +97,29 @@ corpus, never a pinned schema:
 elephant define ci-green/1 --arg task:symbol \
     --desc "CI pipeline green for task ?t" --kind evidence --asserter role:ci -t release
 
-elephant vocab -t release                   # families × roles × class × docs
-#   hole    predicate  ci-green/1   body — CI pipeline green for task ?t
-#   active  legacy     verified     body  [built-in]
+# a rule that listens for (ci-green ?t) makes it a live part of the vocabulary
+elephant assert '(normally r-verified (and (ci-green ?t) (review-approved ?t)) (verified ?t))' -t release
 
-# why-not / require answers now carry the documentation of whatever is
-# missing, and a daemon-served assert that lands where nothing listens
-# gets a near-miss advisory in its receipt (never an error):
-elephant assert 'ci-green-m2' -t release
-#   advisory (sibling): family ci-green
-#     did you mean ci-green-m1?  (listener r-verified)
+elephant vocab -t release                   # families × roles × class × docs
+#   active  predicate  ci-green/1         body  — CI pipeline green for task ?t
+#   active  predicate  review-approved/1  body
+#   active  predicate  verified/1         head  — evidence a task's work is verified …  [built-in]
+
+# prove one witness so (ci-green m1) is demanded but still unproven …
+elephant assert '(given (review-approved m1))' -t release
+
+# … then why-not / require answers carry the documentation of whatever is
+# missing, and a daemon-served assert that lands on a near-miss sibling gets
+# a near-miss advisory in its receipt (never an error):
+elephant assert '(given (ci-green m2))' -t release
+#   advisory (sibling): family ci-green/1
+#     did you mean (ci-green m1)?  (listener r-verified)
 ```
+
+> The advisory is best-effort and daemon-only: it is read from the daemon's
+> cached view and is silently absent on a direct-store assert, or on the
+> *first* assert to a theory after the daemon (re)starts (its view is not yet
+> warm) — never a blocked or failed assert (SPEC-005 NFR-402).
 
 ## Usage
 
