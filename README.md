@@ -44,6 +44,24 @@ The concept comes from three observations:
   elephant makes a promise a first-class object whose fulfilment or
   violation is *derived* from the corpus.
 
+## Install
+
+```bash
+curl https://files.anuna.io/elephant/install.sh | sh
+```
+
+Detects your platform, downloads the matching prebuilt binary from
+`https://files.anuna.io/elephant/`, verifies its SHA-256 checksum, and installs
+it to `~/.local/bin` (override with `ELEPHANT_INSTALL_DIR`). No Rust toolchain
+and no sibling checkouts required. Prebuilt binaries are published for macOS and
+Linux on arm64 and x64.
+
+To build from source instead — which needs the three sibling checkouts
+(`../cbcl-rs`, `../spindle-rust`, `../did-crdt`) that elephant depends on via
+path deps — see **Quick start** below. Maintainers cut releases with
+`./release.sh <version>`, which gates, tags, and triggers the cross-compile +
+publish pipeline (`.woodpecker/release.yaml`).
+
 ## Quick start
 
 ```bash
