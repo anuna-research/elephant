@@ -196,6 +196,19 @@ fn advisory_on_daemon_append() {
         t.get("advisory").is_none(),
         "trust-bearing multi-form payload never advises"
     );
+    // Multi-form payloads whose rider touches NO Theory collection — a
+    // bodyless claims block and a bare empty form — must also be caught by
+    // the top-level-form count, not just the collection-emptiness checks.
+    let cl = e.assert_json("(given stray-two) (claims mallory)");
+    assert!(
+        cl.get("advisory").is_none(),
+        "bodyless-claims multi-form payload never advises"
+    );
+    let em = e.assert_json("(given stray-three) ()");
+    assert!(
+        em.get("advisory").is_none(),
+        "empty-form multi-form payload never advises"
+    );
 
     // Daemon counters surfaced (OBS-401 / SPEC-001 OBS-002 extension).
     let st = e.json(&["daemon", "status"]);

@@ -681,38 +681,25 @@ fn produce_define(ctx: &Ctx, args: &DefineArgs) -> AppResult<()> {
     use crate::core::vocab;
     let refuse = |m: String| AppError::Parse(m);
 
-    // Indicator: spindle's recogniser owns the *form* (SPEC-024, one
-    // parser per language); CON-401 constrains it further — LDH functor,
-    // canonical arity (no leading zero, ≤ u32::MAX), arity ≥ 1.
-    spindle_parser::parse_predicate_indicator(&args.indicator).map_err(|e| {
+    // Indicator: spindle's recogniser owns the *form* (SPEC-024, one parser
+    // per language) and already enforces canonical arity (no leading zero,
+    // ≤ u32::MAX); take functor/arity from its `PredicateSymbol` rather than
+    // re-splitting the string (a second grammar that could drift from
+    // spindle's — e.g. quoted functors). CON-401 then constrains it further:
+    // LDH functor, arity ≥ 1, not a built-in.
+    let sym = spindle_parser::parse_predicate_indicator(&args.indicator).map_err(|e| {
         refuse(format!(
             "'{}' is not a predicate indicator (functor/arity): {e}",
             args.indicator
         ))
     })?;
-    let (functor, arity_txt) = args
-        .indicator
-        .split_once('/')
-        .ok_or_else(|| refuse(format!("'{}' has no /arity part", args.indicator)))?;
-    if !crate::store::is_valid_alias(functor) {
+    let functor = sym.functor().to_string();
+    let arity = sym.arity() as u64;
+    if !crate::store::is_valid_alias(&functor) {
         return Err(refuse(format!(
             "functor '{functor}' is not an LDH label (1-63 lowercase letters, \
              digits and hyphens — SPEC-001 REQ-003)"
         )));
-    }
-    let canonical_arity = !arity_txt.is_empty()
-        && arity_txt.bytes().all(|b| b.is_ascii_digit())
-        && (arity_txt == "0" || !arity_txt.starts_with('0'));
-    if !canonical_arity {
-        return Err(refuse(format!(
-            "arity '{arity_txt}' is not canonical (digits only, no leading zero)"
-        )));
-    }
-    let arity: u64 = arity_txt
-        .parse()
-        .map_err(|_| refuse(format!("arity '{arity_txt}' overflows")))?;
-    if arity > u64::from(u32::MAX) {
-        return Err(refuse(format!("arity {arity} exceeds 2^32-1")));
     }
     if arity == 0 {
         return Err(refuse(format!(
@@ -721,7 +708,7 @@ fn produce_define(ctx: &Ctx, args: &DefineArgs) -> AppResult<()> {
              the bare atom (SPEC-005 CON-402)"
         )));
     }
-    if vocab::builtin(functor).is_some() {
+    if vocab::builtin(&functor).is_some() {
         return Err(refuse(format!(
             "'{functor}' is reserved built-in vocabulary at every arity \
              (SPEC-005 REQ-404); it cannot be redefined from the wire"
@@ -817,15 +804,7 @@ fn produce_define(ctx: &Ctx, args: &DefineArgs) -> AppResult<()> {
     // for — any value that smuggles structure fails here, before signing.
     let parsed = spindle_parser::parse_spl(&payload)
         .map_err(|e| refuse(format!("constructed payload does not parse: {e}")))?;
-    let sym = spindle_core::vocabulary::PredicateSymbol::try_new(
-        spindle_core::literal::InternedLiteralName::intern(functor),
-        arity as usize,
-    )
-    .map_err(|e| {
-        refuse(format!(
-            "'{functor}/{arity}' is not a predicate symbol: {e}"
-        ))
-    })?;
+    // Reuse the indicator's own symbol — no need to rebuild it.
     let target = spindle_core::vocabulary::MetaTarget::Predicate(sym);
     let stored = parsed
         .get_meta_target(&target)

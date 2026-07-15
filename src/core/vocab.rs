@@ -389,6 +389,13 @@ pub fn family(lit: &Literal, tasks: &BTreeSet<String>) -> Family {
             Ok(sym) => Family::Predicate(sym),
             Err(_) => Family::Malformed(lit.name().to_string()),
         }
+    } else if PredicateSymbol::validate_functor(lit.name()).is_err() {
+        // Arity 0 with an empty or control-character functor: spindle's
+        // `Vocabulary::derive` keys this occurrence as `MalformedPredicate`
+        // (arity 0), so `family` must agree — else the demand/advisory path
+        // keys `Legacy("")` while the row is `Malformed("")` and they never
+        // join (a valid `(always r "" done)` mis-classes the family).
+        Family::Malformed(lit.name().to_string())
     } else {
         flat_family(lit.name(), tasks)
     }
@@ -575,6 +582,68 @@ fn doc_from_meta(meta: &Meta) -> Option<FamilyDoc> {
     any.then_some(doc)
 }
 
+/// A documentation write surfaced from one admitted assert's payload: the
+/// family targeted, the CON-401 key, and whether its value conforms. The
+/// single recognizer behind both REQ-407 surfaces — the view's provenance
+/// pass (which keeps conforming `description` writes) and `redefinitions`
+/// (which counts any key write). Keeping one scanner means the prefilter and
+/// the synthetic/builtin/rule-label exclusions cannot drift between them.
+struct DocWrite {
+    family: Family,
+    key: String,
+    conforming: bool,
+}
+
+/// Scan one admitted assert's SPL payload for the CON-401 documentation
+/// writes it carries (REQ-402/REQ-407). Empty for a payload carrying no doc
+/// key. `theory` supplies the rule-label check for the legacy carrier.
+fn doc_writes(theory: &Theory, spl: &str) -> Vec<DocWrite> {
+    // Cheap prefilter only — it must be a superset of what the parser
+    // accepts: SPL allows whitespace after `(`, so gating on "(meta" would
+    // let `( meta …)` redefine documentation invisibly (adversarial-review
+    // finding #1); and SPL quoted atoms unescape `\X` → `X` before keyword
+    // dispatch, so `("me\ta" …)` IS a meta form whose source lacks the bare
+    // byte substring — every such spelling necessarily carries a backslash,
+    // so an escape-free payload without either keyword can never write docs.
+    if !spl.contains("meta") && !spl.contains("predicate") && !spl.contains('\\') {
+        return Vec::new();
+    }
+    let Ok(t2) = spindle_parser::parse_spl(spl) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (sym, meta) in t2.predicate_metadata() {
+        let functor = sym.functor().to_string();
+        if synthetic_name(&functor) || builtin(&functor).is_some() {
+            continue;
+        }
+        for key in DOC_KEYS {
+            if let Some(v) = meta.properties.get(key) {
+                out.push(DocWrite {
+                    family: Family::Predicate(*sym),
+                    key: key.to_string(),
+                    conforming: conforming_value(key, v).is_some(),
+                });
+            }
+        }
+    }
+    for (label, meta) in t2.metadata() {
+        if synthetic_name(label) || theory.get_rule(label).is_some() || builtin(label).is_some() {
+            continue;
+        }
+        for key in DOC_KEYS {
+            if let Some(v) = meta.properties.get(key) {
+                out.push(DocWrite {
+                    family: Family::Legacy(label.clone()),
+                    key: key.to_string(),
+                    conforming: conforming_value(key, v).is_some(),
+                });
+            }
+        }
+    }
+    out
+}
+
 // ── Roles, classes, rows (REQ-401 / CON-403) ────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -748,7 +817,11 @@ pub fn view(closure: &Closure) -> VocabView {
         }
     };
 
-    let goal_exprs: Vec<(String, Option<String>, Option<String>)> = closure
+    // (listener, trigger, goal, is_request) per non-retracted commitment or
+    // request. `is_request` is recorded here, from the same act match, so the
+    // trigger-demand branch below needs no second O(admitted) scan of the
+    // corpus (the former `listener_is_request` lookup was quadratic).
+    let goal_exprs: Vec<(String, Option<String>, Option<String>, bool)> = closure
         .admitted
         .iter()
         .filter(|a| !a.retracted)
@@ -762,6 +835,7 @@ pub fn view(closure: &Closure) -> VocabView {
                 sentence_id.clone(),
                 Some(trigger.clone()),
                 Some(goal.clone()),
+                false,
             )),
             SpeechAct::Request {
                 request_id,
@@ -772,11 +846,12 @@ pub fn view(closure: &Closure) -> VocabView {
                 request_id.clone(),
                 Some(trigger.clone()),
                 Some(goal.clone()),
+                true,
             )),
             _ => None,
         })
         .collect();
-    for (listener, trigger, goal) in &goal_exprs {
+    for (listener, trigger, goal, is_request) in &goal_exprs {
         let mut goal_lits: Vec<BodyLit> = Vec::new();
         if let Some(t) = trigger
             && !t.trim().is_empty()
@@ -808,7 +883,7 @@ pub fn view(closure: &Closure) -> VocabView {
         // *triggers* also ride the synthetic __ct- rules and get the full
         // body treatment in step 3; requests have no synthetic rule, so
         // their triggers are joined here.
-        let request_trigger_lits: Vec<BodyLit> = if listener_is_request(closure, listener) {
+        let request_trigger_lits: Vec<BodyLit> = if *is_request {
             trigger
                 .as_deref()
                 .filter(|t| !t.trim().is_empty())
@@ -914,7 +989,8 @@ pub fn view(closure: &Closure) -> VocabView {
     }
 
     // 5. Provenance (REQ-407): one pass over admitted Entries in canonical
-    //    order — the merged metadata map alone carries no attribution.
+    //    order — the merged metadata map alone carries no attribution. Only
+    //    a conforming `description` write attributes a documenter.
     let mut prov: HashMap<Family, (String, BTreeSet<String>)> = HashMap::new();
     for a in &closure.admitted {
         if a.retracted || a.label_shadowed {
@@ -923,57 +999,14 @@ pub fn view(closure: &Closure) -> VocabView {
         let SpeechAct::Assert { spl, .. } = &a.act else {
             continue;
         };
-        // Cheap prefilter only — it must be a superset of what the parser
-        // accepts: SPL allows whitespace after `(`, so gating on "(meta"
-        // would let `( meta …)` redefine documentation invisibly
-        // (adversarial-review finding #1); and SPL quoted atoms unescape
-        // `\X` → `X` before keyword dispatch, so `("me\ta" …)` IS a meta
-        // form whose source lacks the bare byte substring — every such
-        // spelling necessarily carries a backslash, so an escape-free
-        // payload without either keyword can never write documentation.
-        if !spl.contains("meta") && !spl.contains("predicate") && !spl.contains('\\') {
-            continue;
-        }
-        let Ok(t2) = spindle_parser::parse_spl(spl) else {
-            continue;
-        };
-        let mut written: Vec<Family> = Vec::new();
-        for (sym, meta) in t2.predicate_metadata() {
-            let functor = sym.functor().to_string();
-            if synthetic_name(&functor) || builtin(&functor).is_some() {
-                continue;
+        for w in doc_writes(theory, spl) {
+            if w.key == "description" && w.conforming {
+                let e = prov
+                    .entry(w.family)
+                    .or_insert_with(|| (a.entry.signer.clone(), BTreeSet::new()));
+                e.0 = a.entry.signer.clone();
+                e.1.insert(a.entry.signer.clone());
             }
-            if meta
-                .properties
-                .get("description")
-                .and_then(|v| conforming_value("description", v))
-                .is_some()
-            {
-                written.push(Family::Predicate(*sym));
-            }
-        }
-        for (label, meta) in t2.metadata() {
-            if synthetic_name(label)
-                || theory.get_rule(label).is_some()
-                || builtin(label).is_some()
-            {
-                continue;
-            }
-            if meta
-                .properties
-                .get("description")
-                .and_then(|v| conforming_value("description", v))
-                .is_some()
-            {
-                written.push(Family::Legacy(label.clone()));
-            }
-        }
-        for fam in written {
-            let e = prov
-                .entry(fam)
-                .or_insert_with(|| (a.entry.signer.clone(), BTreeSet::new()));
-            e.0 = a.entry.signer.clone();
-            e.1.insert(a.entry.signer.clone());
         }
     }
 
@@ -1035,13 +1068,6 @@ pub fn view(closure: &Closure) -> VocabView {
         demands,
         tasks,
     }
-}
-
-fn listener_is_request(closure: &Closure, id: &str) -> bool {
-    closure
-        .admitted
-        .iter()
-        .any(|a| matches!(&a.act, SpeechAct::Request { request_id, .. } if request_id == id))
 }
 
 /// A body literal for demand computation. `joinable` = the occurrence
@@ -1288,45 +1314,13 @@ pub fn redefinitions(closure: &Closure) -> Vec<Redefinition> {
         let SpeechAct::Assert { spl, sentence_id } = &a.act else {
             continue;
         };
-        // Cheap prefilter only — it must be a superset of what the parser
-        // accepts: SPL allows whitespace after `(`, so gating on "(meta"
-        // would let `( meta …)` redefine documentation invisibly
-        // (adversarial-review finding #1); and SPL quoted atoms unescape
-        // `\X` → `X` before keyword dispatch, so `("me\ta" …)` IS a meta
-        // form whose source lacks the bare byte substring — every such
-        // spelling necessarily carries a backslash, so an escape-free
-        // payload without either keyword can never write documentation.
-        if !spl.contains("meta") && !spl.contains("predicate") && !spl.contains('\\') {
-            continue;
-        }
-        let Ok(t2) = spindle_parser::parse_spl(spl) else {
-            continue;
-        };
-        let mut writes: Vec<(Family, String)> = Vec::new();
-        for (sym, meta) in t2.predicate_metadata() {
-            let functor = sym.functor().to_string();
-            if synthetic_name(&functor) || builtin(&functor).is_some() {
-                continue;
-            }
-            for key in DOC_KEYS {
-                if meta.properties.contains_key(key) {
-                    writes.push((Family::Predicate(*sym), key.to_string()));
-                }
-            }
-        }
-        for (label, meta) in t2.metadata() {
-            if synthetic_name(label)
-                || theory.get_rule(label).is_some()
-                || builtin(label).is_some()
-            {
-                continue;
-            }
-            for key in DOC_KEYS {
-                if meta.properties.contains_key(key) {
-                    writes.push((Family::Legacy(label.clone()), key.to_string()));
-                }
-            }
-        }
+        // Any write of a CON-401 key counts toward redefinition (a malformed
+        // overwrite still contests the family), so unlike the provenance
+        // pass this ignores the `conforming` flag.
+        let mut writes: Vec<(Family, String)> = doc_writes(theory, spl)
+            .into_iter()
+            .map(|w| (w.family, w.key))
+            .collect();
         writes.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
         for (fam, key) in writes {
             if let Some(prev) = winners.get(&(fam.clone(), key.clone()))
@@ -1470,16 +1464,11 @@ fn resolved_args(fam: &Family, lit: &Literal) -> Vec<String> {
                 .unwrap_or_default()
         }
         Family::Predicate(_) => {
-            let spl = lit.to_spl();
-            let inner = spl
-                .strip_prefix('(')
-                .and_then(|s| s.strip_suffix(')'))
-                .unwrap_or(&spl);
-            inner
-                .split_whitespace()
-                .skip(1)
-                .map(str::to_string)
-                .collect()
+            // Read the structured argument terms directly: rendering to SPL
+            // and splitting on whitespace mis-tokenises a quoted argument
+            // (`(finding m1 "needs retry")`) and double-wraps a negated
+            // literal (`(not (p x))`), corrupting the shares() ranking.
+            lit.predicate_args().iter().map(|t| t.to_string()).collect()
         }
         Family::Malformed(_) => Vec::new(),
     }
@@ -2441,6 +2430,51 @@ mod tests {
         assert_ne!(f, family(&l2, &no_tasks()));
         // Escaped on display.
         assert_eq!(f.rendered(), "bad\\u{0001}name");
+    }
+
+    #[test]
+    fn arity_zero_malformed_functor_families_malformed() {
+        // An arity-0 literal with an empty or control-character functor must
+        // family as Malformed, matching spindle's `Vocabulary::derive`
+        // diagnostic keying — else the demand/advisory path keys Legacy while
+        // the row is Malformed and they never join.
+        use spindle_core::mode::Mode;
+        use spindle_core::temporal::Temporal;
+        let empty = Literal::new("", false, Mode::default(), Temporal::default(), vec![]);
+        assert_eq!(family(&empty, &no_tasks()), Family::Malformed("".to_string()));
+        let ctrl = Literal::new(
+            "ba\u{1}d",
+            false,
+            Mode::default(),
+            Temporal::default(),
+            vec![],
+        );
+        assert_eq!(
+            family(&ctrl, &no_tasks()),
+            Family::Malformed("ba\u{1}d".to_string())
+        );
+        // A well-formed flat atom is unaffected (still Legacy). Use a
+        // non-built-in stem so rule 2's ground-pattern table does not claim
+        // it (`verified-m1` would family to the built-in `verified`).
+        assert_eq!(
+            family(&lit("stale-note-x"), &no_tasks()),
+            Family::Legacy("stale-note-x".to_string())
+        );
+    }
+
+    #[test]
+    fn resolved_args_reads_structured_terms() {
+        // A quoted multi-word argument stays one token, and a negated literal
+        // does not fragment — the to_spl-split it replaced mis-tokenised both.
+        let quoted = lit(r#"(finding m1 "needs retry")"#);
+        let fam = family(&quoted, &no_tasks());
+        assert_eq!(
+            resolved_args(&fam, &quoted),
+            vec!["m1".to_string(), "needs retry".to_string()]
+        );
+        let negated = lit("(not (ci-green m1))");
+        let nfam = family(&negated, &no_tasks());
+        assert_eq!(resolved_args(&nfam, &negated), vec!["m1".to_string()]);
     }
 
     #[test]

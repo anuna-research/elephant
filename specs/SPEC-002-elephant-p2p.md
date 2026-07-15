@@ -435,11 +435,13 @@ structured audit line (invite id, outcome, no secrets).
   `?advice=false`; a query parameter so the request body stays
   byte-identical against pre-extension daemons)
   and an OPTIONAL `advisory` response object evaluated against the daemon's
-  cached reference view before the append is applied. Both fields are
-  `deny_unknown_fields`-clean and change neither the append's success nor
-  its entry count. **Code follow-up (implementing):** `AppendBody` and the
-  append response in `src/daemon/api.rs` must gain these fields to satisfy
-  the contract.
+  cached reference view before the append is applied. The request body is
+  unchanged (`AppendBody` gains no field, staying `deny_unknown_fields`-clean
+  against pre-extension daemons); the response `advisory` object is additive
+  and older clients ignore it. Neither changes the append's success nor its
+  entry count, and a malformed `advice` value degrades to no advisory rather
+  than rejecting the append. Implemented in `src/daemon/api.rs`
+  (`advice_from_query` + the `advisory` response field).
 
 - 0.1.2 — two-daemon loopback e2e added (tests/sync_live.rs, [[#TEST-115]]):
   the composed sync loops over live iroh QUIC on 127.0.0.1, addresses
