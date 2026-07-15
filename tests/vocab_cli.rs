@@ -214,7 +214,14 @@ fn define_escapes_quotes_backslashes_semicolons() {
     let desc = r#"say "hi"; a\b path"#;
     let asserter = r#"agent "a;b"\ crew"#;
     env.json(&[
-        "define", "p/1", "--desc", desc, "--asserter", asserter, "-t", "release",
+        "define",
+        "p/1",
+        "--desc",
+        desc,
+        "--asserter",
+        asserter,
+        "-t",
+        "release",
     ]);
     let row = env.row("predicate", "p/1");
     assert_eq!(row["doc"]["description"], desc);

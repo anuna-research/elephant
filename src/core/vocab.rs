@@ -976,10 +976,7 @@ pub fn view(closure: &Closure) -> VocabView {
         }
     }
     for (label, meta) in theory.metadata() {
-        if synthetic_name(label)
-            || theory.get_rule(label).is_some()
-            || builtin(label).is_some()
-        {
+        if synthetic_name(label) || theory.get_rule(label).is_some() || builtin(label).is_some() {
             continue;
         }
         if let Some(doc) = doc_from_meta(meta) {
@@ -2441,7 +2438,10 @@ mod tests {
         use spindle_core::mode::Mode;
         use spindle_core::temporal::Temporal;
         let empty = Literal::new("", false, Mode::default(), Temporal::default(), vec![]);
-        assert_eq!(family(&empty, &no_tasks()), Family::Malformed("".to_string()));
+        assert_eq!(
+            family(&empty, &no_tasks()),
+            Family::Malformed("".to_string())
+        );
         let ctrl = Literal::new(
             "ba\u{1}d",
             false,

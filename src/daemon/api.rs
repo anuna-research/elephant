@@ -88,8 +88,7 @@ pub fn serve(paths: Paths, ident: Identity, lock: super::DaemonLock) -> AppResul
         // watch would go stale after every sync. The session reports each
         // theory it changed on `refresh_tx`; a consumer recomputes it under
         // the write gate (via recompute_and_notify).
-        let (refresh_tx, mut refresh_rx) =
-            tokio::sync::mpsc::unbounded_channel::<String>();
+        let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         {
             let state = state.clone();
             tokio::spawn(async move {
@@ -666,7 +665,10 @@ mod tests {
         assert_eq!(top_level_form_count("(given x) ()"), 2);
         assert_eq!(top_level_form_count("(given x) (trusts a 1.0)"), 2);
         // Parens and comments inside a quoted atom do not add forms.
-        assert_eq!(top_level_form_count(r#"(meta p (description "a (b) ; c"))"#), 1);
+        assert_eq!(
+            top_level_form_count(r#"(meta p (description "a (b) ; c"))"#),
+            1
+        );
         // A comment between forms is not itself a form.
         assert_eq!(top_level_form_count("(given x) ; note\n"), 1);
     }
