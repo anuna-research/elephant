@@ -61,16 +61,22 @@ pub fn parse_literal(text: &str) -> AppResult<Literal> {
         .ok_or_else(|| AppError::Parse(format!("'{text}' did not parse to a literal")))
 }
 
+/// Render a literal for display and for pasting back into a query command.
+/// `to_spl` already emits the single `(not …)` wrapper for a negated literal,
+/// so a negated form is returned verbatim — the inner parens are load-bearing
+/// (`not` takes exactly one argument, so `(not flies opus)` would be
+/// rejected). A positive literal has its outer parens stripped for
+/// readability; the flat-form sugar `(given <atom> <args…>)` still accepts the
+/// result, so `elephant explain`/`why-not` round-trip it.
 fn lit_display(l: &Literal) -> String {
-    let inner = l.to_spl();
-    let stripped = inner
-        .strip_prefix('(')
-        .and_then(|s| s.strip_suffix(')'))
-        .unwrap_or(&inner);
+    let spl = l.to_spl();
     if l.negation {
-        format!("(not {stripped})")
+        spl
     } else {
-        stripped.to_string()
+        spl.strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .map(str::to_string)
+            .unwrap_or(spl)
     }
 }
 
