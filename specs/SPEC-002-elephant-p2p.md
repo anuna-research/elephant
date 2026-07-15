@@ -1,10 +1,10 @@
 ---
 id: SPEC-002
 title: elephant p2p — daemon, SPAKE2 join, pkarr discovery, Loro sync
-version: 0.1.2
+version: 0.1.3
 status: implementing
 date: 2026-07-11
-last-updated: 2026-07-11
+last-updated: 2026-07-14
 audience: agent, human reviewer
 ---
 
@@ -319,6 +319,30 @@ request; pushes only on watch streams. Error model: JSON error object,
 Implements: [[#REQ-102]] [[#REQ-109]]. Verified by: [[#TEST-102]]
 [[#TEST-113]] (fuzz).
 
+**Append advisory extension** (0.1.3;
+[[SPEC-005-elephant-vocabulary#REQ-406]]). The
+`POST /v1/theories/{id}/entries` append **request** gains an OPTIONAL
+`advice` boolean **query parameter**, defaulted `true` (a client's
+`--no-advice` sends `?advice=false`; omission preserves the
+pre-advisory behaviour). A query parameter, NOT a body field: the
+request body stays byte-identical to the pre-advisory shape, so a
+pre-extension daemon — same API version, `deny_unknown_fields` body —
+ignores the unextracted query string instead of rejecting the append
+(a body field would fail every `--no-advice` and non-assert producer
+against it). Its **response** body gains an OPTIONAL
+`advisory` object — present only when a single-fact append triggers a
+near-miss ([[SPEC-005-elephant-vocabulary#CON-403]] shape), absent
+otherwise. The daemon evaluates the advisory against its cached
+reference view ([[SPEC-005-elephant-vocabulary#NFR-402]]) **before**
+applying the append. Both are additive in both directions: an older
+client omits `advice` and ignores an absent `advisory`; an older daemon
+ignores `advice` and never emits `advisory`. The advisory SHALL NOT
+change the append's success,
+HTTP status, or entry count, and any failure of its computation degrades
+to an absent `advisory`, never a failed append
+([[SPEC-005-elephant-vocabulary#REQ-406]] degradation clause). Verified
+by: [[SPEC-005-elephant-vocabulary#TEST-406]].
+
 #### CON-102: Invite code
 
 ```abnf
@@ -404,6 +428,20 @@ structured audit line (invite id, outcome, no secrets).
 
 <details>
 <summary>Revision history</summary>
+
+- 0.1.3 — [[#CON-101]] append contract extended (additively) to carry the
+  [[SPEC-005-elephant-vocabulary#REQ-406]] near-miss advisory: an OPTIONAL
+  `advice` request query parameter (default `true`, `--no-advice` →
+  `?advice=false`; a query parameter so the request body stays
+  byte-identical against pre-extension daemons)
+  and an OPTIONAL `advisory` response object evaluated against the daemon's
+  cached reference view before the append is applied. The request body is
+  unchanged (`AppendBody` gains no field, staying `deny_unknown_fields`-clean
+  against pre-extension daemons); the response `advisory` object is additive
+  and older clients ignore it. Neither changes the append's success nor its
+  entry count, and a malformed `advice` value degrades to no advisory rather
+  than rejecting the append. Implemented in `src/daemon/api.rs`
+  (`advice_from_query` + the `advisory` response field).
 
 - 0.1.2 — two-daemon loopback e2e added (tests/sync_live.rs, [[#TEST-115]]):
   the composed sync loops over live iroh QUIC on 127.0.0.1, addresses

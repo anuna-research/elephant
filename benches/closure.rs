@@ -12,7 +12,12 @@ use std::hint::black_box;
 
 fn corpus(n: usize) -> (Vec<Entry>, ed25519_dalek::VerifyingKey) {
     let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let did = "did:crdt:9999";
+    // BUG-002 fix: the DID and HLC node id must be the ones merge-time
+    // validation derives from the signing key, or every entry quarantines
+    // and the bench measures the rejection path instead of reasoning.
+    let did = format!("did:crdt:{}", "09".repeat(32));
+    let node = did_crdt::core::validate::node_id_from_pubkey(key.verifying_key().as_bytes());
+    let did = did.as_str();
     let mut entries = Vec::with_capacity(n);
     // A realistic mix: a chain of facts feeding one gated conclusion, plus
     // independent facts. This exercises rule firing, not just fact lookup.
@@ -20,7 +25,7 @@ fn corpus(n: usize) -> (Vec<Entry>, ed25519_dalek::VerifyingKey) {
         let hlc = Hlc {
             wall_ms: 1_784_000_000_000 + i as u64,
             logical: 0,
-            node_id: 9,
+            node_id: node,
         };
         let spl = if i == 0 {
             "(normally r-gate (and f-0 f-1 f-2) goal)".to_string()
@@ -42,6 +47,37 @@ fn corpus(n: usize) -> (Vec<Entry>, ed25519_dalek::VerifyingKey) {
         ));
     }
     (entries, key.verifying_key())
+}
+
+/// SPEC-005 NFR-401 / TEST-408: the vocab view must complete within the
+/// NFR-001 closure budget + 50 ms — measured here as the *incremental*
+/// cost of `vocab::view` over an already-computed closure (family
+/// resolution, docs join, provenance pass, witness join).
+fn bench_vocab_view(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vocab_view");
+    let n = 1_000usize;
+    let (entries, vk) = corpus(n);
+    let resolve = move |_: &str, _: &str| Some(vk);
+    let closure = closure::close(
+        &entries,
+        "bench",
+        "genesis",
+        &resolve,
+        "",
+        1_784_000_100_000,
+    )
+    .unwrap();
+    assert!(
+        closure.quarantined.is_empty(),
+        "bench corpus must be admitted (BUG-002)"
+    );
+    group.bench_function(format!("{n}_entries"), |b| {
+        b.iter(|| {
+            let v = elephant::core::vocab::view(black_box(&closure));
+            black_box(v.rows.len())
+        })
+    });
+    group.finish();
 }
 
 fn bench_closure(c: &mut Criterion) {
@@ -67,5 +103,5 @@ fn bench_closure(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_closure);
+criterion_group!(benches, bench_closure, bench_vocab_view);
 criterion_main!(benches);

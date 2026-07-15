@@ -61,16 +61,22 @@ pub fn parse_literal(text: &str) -> AppResult<Literal> {
         .ok_or_else(|| AppError::Parse(format!("'{text}' did not parse to a literal")))
 }
 
+/// Render a literal for display and for pasting back into a query command.
+/// `to_spl` already emits the single `(not …)` wrapper for a negated literal,
+/// so a negated form is returned verbatim — the inner parens are load-bearing
+/// (`not` takes exactly one argument, so `(not flies opus)` would be
+/// rejected). A positive literal has its outer parens stripped for
+/// readability; the flat-form sugar `(given <atom> <args…>)` still accepts the
+/// result, so `elephant explain`/`why-not` round-trip it.
 fn lit_display(l: &Literal) -> String {
-    let inner = l.to_spl();
-    let stripped = inner
-        .strip_prefix('(')
-        .and_then(|s| s.strip_suffix(')'))
-        .unwrap_or(&inner);
+    let spl = l.to_spl();
     if l.negation {
-        format!("(not {stripped})")
+        spl
     } else {
-        stripped.to_string()
+        spl.strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .map(str::to_string)
+            .unwrap_or(spl)
     }
 }
 
@@ -181,13 +187,64 @@ pub fn explain(ctx: &Ctx, literal: &str) -> AppResult<()> {
     Ok(())
 }
 
-// ── why-not (REQ-012) ───────────────────────────────────────────────────
+// ── why-not (REQ-012; SPEC-005 REQ-405 docs join) ───────────────────────
+
+/// SPEC-005 REQ-405: the docs object for every *documented* family among
+/// the given literals — corpus documentation and built-in registry alike.
+/// Undocumented families are omitted, so output stays byte-identical to
+/// the pre-405 shape when nothing is documented. `documenter`/`redefined`
+/// deliberately omitted (provenance lives in the vocab view).
+fn docs_join<'a>(
+    vv: &crate::core::vocab::VocabView,
+    lits: impl Iterator<Item = &'a Literal>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    // Process legacy before predicate so that in the (pathological) case
+    // of a flat atom spelled like an indicator sharing a rendered key with
+    // a documented predicate family, the predicate entry wins
+    // deterministically; the family_kind field carries the discriminant.
+    let mut fams: Vec<crate::core::vocab::Family> = lits
+        .map(|l| crate::core::vocab::family(l, &vv.tasks))
+        .collect();
+    fams.sort();
+    fams.reverse();
+    fams.dedup();
+    for fam in fams {
+        let row = vv.rows.iter().find(|r| r.family == fam);
+        let Some(row) = row else { continue };
+        let Some(desc) = &row.doc.description else {
+            continue;
+        };
+        let mut o = serde_json::Map::new();
+        o.insert("family_kind".into(), fam.kind().into());
+        o.insert("description".into(), desc.clone().into());
+        if let Some(k) = &row.doc.kind {
+            o.insert("kind".into(), k.clone().into());
+        }
+        if let Some(a) = &row.doc.asserter {
+            o.insert("asserter".into(), a.clone().into());
+        }
+        o.insert("built_in".into(), row.built_in.into());
+        out.insert(fam.rendered(), o.into());
+    }
+    out
+}
+
+/// The description a literal's family carries, if documented (text mode).
+fn doc_of<'a>(vv: &'a crate::core::vocab::VocabView, l: &Literal) -> Option<&'a str> {
+    let fam = crate::core::vocab::family(l, &vv.tasks);
+    vv.rows
+        .iter()
+        .find(|r| r.family == fam)
+        .and_then(|r| r.doc.description.as_deref())
+}
 
 pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
     let r = spindle_core::query::why_not(&v.closure.theory, &lit)
         .map_err(|e| AppError::Reasoner(e.to_string()))?;
+    let vv = crate::core::vocab::view(&v.closure);
     if ctx.json {
         let blocked: Vec<_> = r
             .blocked_by
@@ -202,17 +259,31 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::json!({"v":1, "theory": v.store.theory_id, "literal": literal,
-                "would_derive": r.would_derive, "blocked_by": blocked})
+        let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "literal": literal,
+            "would_derive": r.would_derive, "blocked_by": blocked});
+        let docs = docs_join(
+            &vv,
+            r.blocked_by.iter().flat_map(|b| b.missing_literals.iter()),
         );
+        if !docs.is_empty() {
+            obj["docs"] = docs.into();
+        }
+        println!("{obj}");
     } else {
         if r.blocked_by.is_empty() {
             println!("no rule concludes {literal} — nothing to block");
         }
         for b in &r.blocked_by {
             println!("rule {}: {}", b.rule_label, b.explanation);
+            for m in &b.missing_literals {
+                if let Some(desc) = doc_of(&vv, m) {
+                    println!(
+                        "  {} — {}",
+                        crate::core::vocab::escape_controls(&lit_display(m)),
+                        crate::core::vocab::escape_controls(desc)
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -225,11 +296,15 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
     let lit = parse_literal(literal)?;
     let r = spindle_core::query::abduce(&v.closure.theory, &lit, 8)
         .map_err(|e| AppError::Reasoner(e.to_string()))?;
+    let vv = crate::core::vocab::view(&v.closure);
     let already = r.solutions.iter().any(|s| s.is_already_provable());
-    let solutions: Vec<Vec<String>> = r
+    let open: Vec<&spindle_core::query::AbductionSolution> = r
         .solutions
         .iter()
         .filter(|s| !s.is_already_provable())
+        .collect();
+    let solutions: Vec<Vec<String>> = open
+        .iter()
         .map(|s| {
             let mut f: Vec<String> = s.facts.iter().map(lit_display).collect();
             f.sort();
@@ -237,19 +312,37 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
         })
         .collect();
     if ctx.json {
-        println!(
-            "{}",
-            serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
-                "already_provable": already, "solutions": solutions})
-        );
+        let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
+            "already_provable": already, "solutions": solutions});
+        let docs = docs_join(&vv, open.iter().flat_map(|s| s.facts.iter()));
+        if !docs.is_empty() {
+            obj["docs"] = docs.into();
+        }
+        println!("{obj}");
     } else if already {
         println!("{literal} is already provable");
     } else if solutions.is_empty() {
         println!("no fact set found that would prove {literal} (bounded search)");
     } else {
         println!("provable if all added:");
-        for s in &solutions {
-            println!("  {}", s.join("  "));
+        for s in &open {
+            let rendered: Vec<String> = {
+                let mut f: Vec<String> = s
+                    .facts
+                    .iter()
+                    .map(|l| match doc_of(&vv, l) {
+                        Some(d) => format!(
+                            "{} — {}",
+                            crate::core::vocab::escape_controls(&lit_display(l)),
+                            crate::core::vocab::escape_controls(d)
+                        ),
+                        None => lit_display(l),
+                    })
+                    .collect();
+                f.sort();
+                f
+            };
+            println!("  {}", rendered.join("  "));
         }
     }
     Ok(())
@@ -361,9 +454,22 @@ pub fn commitments(ctx: &Ctx) -> AppResult<()> {
 
 pub fn log(ctx: &Ctx) -> AppResult<()> {
     let v = view(ctx)?;
+    // SPEC-005 REQ-407: annotate Entries that overwrite another signer's
+    // winning documentation value (family, key, previous writer).
+    let redefs = crate::core::vocab::redefinitions(&v.closure);
+    for r in &redefs {
+        // OBS-402: redefinition events logged at journal time.
+        tracing::info!(
+            family = %r.family.rendered(),
+            key = %r.key,
+            previous = %r.previous_writer,
+            entry = %r.sid,
+            "vocabulary documentation redefined"
+        );
+    }
     let mut items: Vec<serde_json::Value> = Vec::new();
     for a in &v.closure.admitted {
-        items.push(serde_json::json!({
+        let mut item = serde_json::json!({
             "sid": a.sid,
             "signer": a.entry.signer,
             "performative": a.act.performative(),
@@ -376,7 +482,23 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
                 "active"
             },
             "cbcl": a.entry.cbcl,
-        }));
+        });
+        let mine: Vec<serde_json::Value> = redefs
+            .iter()
+            .filter(|r| Some(&r.sid) == a.sid.as_ref())
+            .map(|r| {
+                serde_json::json!({
+                    "family": r.family.rendered(),
+                    "family_kind": r.family.kind(),
+                    "key": r.key,
+                    "previous_writer": r.previous_writer,
+                })
+            })
+            .collect();
+        if !mine.is_empty() {
+            item["redefines"] = mine.into();
+        }
+        items.push(item);
     }
     for (e, q) in &v.closure.quarantined {
         items.push(serde_json::json!({
@@ -395,12 +517,31 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
         );
     } else {
         for i in &items {
+            let redef = i["redefines"]
+                .as_array()
+                .map(|rs| {
+                    rs.iter()
+                        .map(|r| {
+                            format!(
+                                "  [redefines {} {} — previously by {}]",
+                                crate::core::vocab::escape_controls(
+                                    r["family"].as_str().unwrap_or("?")
+                                ),
+                                r["key"].as_str().unwrap_or("?"),
+                                r["previous_writer"].as_str().unwrap_or("?"),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
+                .unwrap_or_default();
             println!(
-                "{}  {:<9} {:<8} {}",
+                "{}  {:<9} {:<8} {}{}",
                 i["hlc"]["wall_ms"],
                 i["performative"].as_str().unwrap_or("?"),
                 i["status"].as_str().unwrap_or("?"),
                 i["sid"].as_str().unwrap_or("-"),
+                redef,
             );
         }
     }
@@ -440,6 +581,63 @@ pub fn describe(ctx: &Ctx, labels: &[String]) -> AppResult<()> {
         println!(
             "{}",
             serde_json::json!({"v":1, "theory": v.store.theory_id, "labels": out})
+        );
+    }
+    Ok(())
+}
+
+// ── vocab (SPEC-005 REQ-401) ────────────────────────────────────────────
+
+pub fn vocab(ctx: &Ctx) -> AppResult<()> {
+    use crate::core::vocab::escape_controls;
+    let v = view(ctx)?;
+    let vv = crate::core::vocab::view(&v.closure);
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({"v":1, "theory": v.store.theory_id,
+                "vocab": crate::core::vocab::view_json(&vv)})
+        );
+        return Ok(());
+    }
+    if vv.rows.is_empty() {
+        println!("(no vocabulary — empty theory)");
+        return Ok(());
+    }
+    for r in &vv.rows {
+        let roles: Vec<&str> = r.roles.iter().map(|x| x.name()).collect();
+        let mut markers: Vec<String> = Vec::new();
+        if r.built_in {
+            markers.push("built-in".into());
+        }
+        if r.doc.detached {
+            markers.push("detached".into());
+        }
+        if r.doc.redefined {
+            markers.push("redefined".into());
+        }
+        for k in &r.doc.malformed {
+            markers.push(format!("malformed:{k}"));
+        }
+        let marker_txt = if markers.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", markers.join(" "))
+        };
+        let desc = r
+            .doc
+            .description
+            .as_deref()
+            .map(|d| format!("  — {}", escape_controls(d)))
+            .unwrap_or_default();
+        println!(
+            "{:<7} {:<10} {:<28} {}{}{}",
+            r.class.name(),
+            r.family.kind(),
+            escape_controls(&r.family.rendered()),
+            roles.join(","),
+            desc,
+            marker_txt,
         );
     }
     Ok(())

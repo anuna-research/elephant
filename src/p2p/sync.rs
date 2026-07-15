@@ -78,12 +78,12 @@ where
 /// Drive a sync session as the RESPONDER (the accept side): learn the theory
 /// from the peer's opening offer, enforce the roster gate against the peer's
 /// authenticated transport key (REQ-107), then complete the session. Returns
-/// the theory that was synced.
+/// the theory that was synced and how many deltas were applied locally.
 pub async fn sync_as_responder<S>(
     stream: &mut S,
     peer_node_pk: &str,
     paths: &Paths,
-) -> AppResult<String>
+) -> AppResult<(String, usize)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -97,32 +97,58 @@ where
         ));
     }
     let store = TheoryStore::open(paths, &theory)?;
-    wire::respond_sync_session(stream, &theory, store.doc(), &peer_vv).await?;
+    let applied = wire::respond_sync_session(stream, &theory, store.doc(), &peer_vv).await?;
     store.commit_synced()?;
     let _ = crate::e2ee::process_mls_lane(paths, &store)?;
-    Ok(theory)
+    Ok((theory, applied))
 }
+
+/// Notify the daemon that a sync session applied `applied` deltas to
+/// `theory`, so it can refresh that theory's reference view and tag cache
+/// (NFR-402). No-op when applied == 0 or no refresh channel is wired (e.g.
+/// the standalone sync test harness).
+fn note_synced(refresh: &Option<RefreshTx>, theory: &str, applied: usize) {
+    if applied > 0
+        && let Some(tx) = refresh
+    {
+        let _ = tx.send(theory.to_string());
+    }
+}
+
+/// Channel the daemon listens on to recompute a theory after a sync session
+/// applied peer entries (see `daemon::api::serve`).
+pub type RefreshTx = tokio::sync::mpsc::UnboundedSender<String>;
 
 // ── iroh glue ───────────────────────────────────────────────────────────
 
 /// Serve one accepted sync connection: the roster gate keys off the QUIC
 /// connection's authenticated remote id (REQ-107 — verified before any frame
 /// is parsed for effect).
-async fn handle_connection(conn: iroh::endpoint::Connection, paths: &Paths) -> AppResult<()> {
+async fn handle_connection(
+    conn: iroh::endpoint::Connection,
+    paths: &Paths,
+    refresh: &Option<RefreshTx>,
+) -> AppResult<()> {
     let peer = conn.remote_id().to_string();
     let (send, recv) = conn
         .accept_bi()
         .await
         .map_err(|e| AppError::Transport(format!("accept sync stream: {e}")))?;
     let mut stream = tokio::io::join(recv, send);
-    sync_as_responder(&mut stream, &peer, paths).await?;
+    let (theory, applied) = sync_as_responder(&mut stream, &peer, paths).await?;
+    note_synced(refresh, &theory, applied);
     Ok(())
 }
 
 /// One dial pass: for each local theory, dial every roster peer (except us)
 /// and run a session. Best-effort — a peer that is offline or unreachable is
 /// logged and skipped, never fatal.
-async fn dial_once(endpoint: &iroh::Endpoint, paths: &Paths, ident: &Identity) {
+async fn dial_once(
+    endpoint: &iroh::Endpoint,
+    paths: &Paths,
+    ident: &Identity,
+    refresh: &Option<RefreshTx>,
+) {
     let me = transport::node_pk(ident);
     let theories = match crate::store::list_theories(paths) {
         Ok(t) => t,
@@ -145,8 +171,11 @@ async fn dial_once(endpoint: &iroh::Endpoint, paths: &Paths, ident: &Identity) {
                 Ok(conn) => match conn.open_bi().await {
                     Ok((send, recv)) => {
                         let mut stream = tokio::io::join(recv, send);
-                        if let Err(e) = sync_as_initiator(&mut stream, &theory, paths).await {
-                            tracing::debug!(%theory, %pk, "sync session failed: {e}");
+                        match sync_as_initiator(&mut stream, &theory, paths).await {
+                            Ok(applied) => note_synced(refresh, &theory, applied),
+                            Err(e) => {
+                                tracing::debug!(%theory, %pk, "sync session failed: {e}")
+                            }
                         }
                     }
                     Err(e) => tracing::debug!(%theory, %pk, "open sync stream: {e}"),
@@ -164,9 +193,10 @@ pub async fn run(
     ident: Arc<Identity>,
     shutdown: Arc<tokio::sync::Notify>,
     interval: Duration,
+    refresh: Option<RefreshTx>,
 ) -> AppResult<()> {
     let endpoint = transport::sync_endpoint(&ident).await?;
-    run_with_endpoint(endpoint, paths, ident, shutdown, interval).await
+    run_with_endpoint(endpoint, paths, ident, shutdown, interval, refresh).await
 }
 
 /// The accept + dial loops over an already-bound endpoint. Split from [`run`]
@@ -179,6 +209,7 @@ pub async fn run_with_endpoint(
     ident: Arc<Identity>,
     shutdown: Arc<tokio::sync::Notify>,
     interval: Duration,
+    refresh: Option<RefreshTx>,
 ) -> AppResult<()> {
     tracing::info!(id = %endpoint.id(), "sync endpoint listening");
 
@@ -187,6 +218,7 @@ pub async fn run_with_endpoint(
         let endpoint = endpoint.clone();
         let paths = paths.clone();
         let shutdown = shutdown.clone();
+        let refresh = refresh.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -194,10 +226,11 @@ pub async fn run_with_endpoint(
                     incoming = endpoint.accept() => {
                         let Some(incoming) = incoming else { break };
                         let paths = paths.clone();
+                        let refresh = refresh.clone();
                         tokio::spawn(async move {
                             match incoming.await {
                                 Ok(conn) => {
-                                    if let Err(e) = handle_connection(conn, &paths).await {
+                                    if let Err(e) = handle_connection(conn, &paths, &refresh).await {
                                         tracing::debug!("incoming sync failed: {e}");
                                     }
                                 }
@@ -214,7 +247,7 @@ pub async fn run_with_endpoint(
     loop {
         tokio::select! {
             _ = shutdown.notified() => break,
-            _ = tokio::time::sleep(interval) => dial_once(&endpoint, &paths, &ident).await,
+            _ = tokio::time::sleep(interval) => dial_once(&endpoint, &paths, &ident, &refresh).await,
         }
     }
     accept.abort();
@@ -371,7 +404,7 @@ mod tests {
         let b_theory = theory_id.clone();
         let initiator =
             tokio::spawn(async move { sync_as_initiator(&mut sb, &b_theory, &b_paths).await });
-        responder.await.unwrap().unwrap();
+        let (_theory, _applied) = responder.await.unwrap().unwrap();
         initiator.await.unwrap().unwrap();
 
         // Bob now sees Alice's post-copy fact.
