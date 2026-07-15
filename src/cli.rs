@@ -729,9 +729,11 @@ fn produce_define(ctx: &Ctx, args: &DefineArgs) -> AppResult<()> {
     }
 
     // Properties: ≥ 1 required; each checked against the CON-401 value
-    // grammar. Quotes and backslashes are refused rather than escaped —
-    // the payload embeds these values in quoted SPL atoms, and we reject
-    // anything that cannot ride one verbatim (LangSec: never repair).
+    // grammar, which admits any UTF-8 free of C0/C1 controls — including
+    // quotes, backslashes and semicolons. Quoted values are escaped when
+    // the payload is constructed (SPL quoted atoms unescape `\X` → `X`
+    // and preserve `;` inside strings), and the round-trip check below
+    // verifies the stored record is byte-exact.
     let props: Vec<(&str, &String, bool)> = [
         ("description", args.desc.as_ref(), true),
         ("kind", args.kind.as_ref(), false),
@@ -755,13 +757,6 @@ fn produce_define(ctx: &Ctx, args: &DefineArgs) -> AppResult<()> {
                     "asserter" => "1-128 bytes UTF-8, no control characters",
                     _ => "one of: evidence, state, discovery",
                 }
-            )));
-        }
-        if value.contains('"') || value.contains('\\') || value.contains(';') {
-            return Err(refuse(format!(
-                "--{} value may not contain '\"', '\\' or ';' (it is embedded \
-                 in a quoted SPL atom)",
-                if *key == "description" { "desc" } else { key }
             )));
         }
     }
@@ -800,7 +795,11 @@ fn produce_define(ctx: &Ctx, args: &DefineArgs) -> AppResult<()> {
         .iter()
         .map(|(k, v, quoted)| {
             if *quoted {
-                format!(" ({k} \"{v}\")")
+                // SPL quoted-atom escape: `\X` unescapes to `X`, so
+                // backslash-doubling and quote-escaping round-trip any
+                // CON-401-conforming value verbatim.
+                let esc = v.replace('\\', "\\\\").replace('"', "\\\"");
+                format!(" ({k} \"{esc}\")")
             } else {
                 format!(" ({k} {v})")
             }

@@ -45,21 +45,24 @@ pub fn stop(rec: &DiscoveryRecord) -> AppResult<()> {
 /// Route a batch of pre-signed entries through the daemon (single writer).
 /// Returns the appended count and the daemon's REQ-406 advisory object,
 /// when the append triggered one (SPEC-002 CON-101 advisory extension:
-/// `advice` is enabled by default and omitted from the body when true, so
-/// the common request stays byte-identical to the pre-advisory shape).
+/// `advice` rides a query parameter, enabled by default and sent only as
+/// `?advice=false`, NEVER in the body — a pre-advisory daemon's
+/// `deny_unknown_fields` body would reject an unknown field, while an
+/// unextracted query parameter is ignored, so the request stays valid
+/// against every API-v1 daemon in both directions).
 pub fn append(
     rec: &DiscoveryRecord,
     theory_id: &str,
     entries: &[Entry],
     advice: bool,
 ) -> AppResult<(usize, Option<serde_json::Value>)> {
-    let body = if advice {
-        serde_json::json!({"entries": entries})
-    } else {
-        serde_json::json!({"entries": entries, "advice": false})
-    };
+    let body = serde_json::json!({"entries": entries});
+    let query = if advice { "" } else { "?advice=false" };
     let resp = agent()
-        .post(&url(rec, &format!("/v1/theories/{theory_id}/entries")))
+        .post(&url(
+            rec,
+            &format!("/v1/theories/{theory_id}/entries{query}"),
+        ))
         .set("authorization", &format!("Bearer {}", rec.token))
         .send_json(body)
         .map_err(|e| AppError::Transport(format!("daemon append: {e}")))?;

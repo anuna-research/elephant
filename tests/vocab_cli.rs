@@ -195,20 +195,30 @@ fn define_refusals_exit_3_and_store_nothing() {
         &["define", "p/1", "--arg", "a:strange", "--desc", "d"],
     );
     // value grammar: >512-byte description, control chars, bad kind,
-    // quote smuggling, no properties at all
+    // no properties at all
     let big = "x".repeat(513);
     refuse(&env, &["define", "p/1", "--desc", &big]);
     refuse(&env, &["define", "p/1", "--desc", "a\u{1b}b"]);
     refuse(&env, &["define", "p/1", "--desc", "d", "--kind", "control"]);
     refuse(&env, &["define", "p/1", "--desc", "d", "--kind", "bogus"]);
-    refuse(&env, &["define", "p/1", "--desc", "say \"hi\""]);
-    // --asserter is embedded in a quoted SPL atom too (§8 injection).
-    refuse(
-        &env,
-        &["define", "p/1", "--desc", "d", "--asserter", "a\"b"],
-    );
-    refuse(&env, &["define", "p/1", "--desc", "d", "--asserter", "a;b"]);
     refuse(&env, &["define", "p/1"]);
+}
+
+/// CON-401 permits any control-free UTF-8 — quotes, backslashes and
+/// semicolons are conforming and must round-trip through the quoted SPL
+/// atom (escaped at payload construction, never refused).
+#[test]
+fn define_escapes_quotes_backslashes_semicolons() {
+    let env = Env::new();
+    env.setup_theory();
+    let desc = r#"say "hi"; a\b path"#;
+    let asserter = r#"agent "a;b"\ crew"#;
+    env.json(&[
+        "define", "p/1", "--desc", desc, "--asserter", asserter, "-t", "release",
+    ]);
+    let row = env.row("predicate", "p/1");
+    assert_eq!(row["doc"]["description"], desc);
+    assert_eq!(row["doc"]["asserter"], asserter);
 }
 
 // ── TEST-401/404 through the CLI ────────────────────────────────────────

@@ -188,6 +188,14 @@ fn advisory_on_daemon_append() {
     assert!(b.get("advisory").is_none(), "built-in never advises");
     let d = e.assert_json("ci-green-m1");
     assert!(d.get("advisory").is_none(), "the demanded literal itself");
+    // Multi-form payload whose second form is a trust directive: spindle
+    // stores it only in Theory::trust_policy, so the sole-fact guard must
+    // inspect the policy maps too (REQ-406: multi-form never advises).
+    let t = e.assert_json("(given stray-thing) (trusts alice 1.0)");
+    assert!(
+        t.get("advisory").is_none(),
+        "trust-bearing multi-form payload never advises"
+    );
 
     // Daemon counters surfaced (OBS-401 / SPEC-001 OBS-002 extension).
     let st = e.json(&["daemon", "status"]);

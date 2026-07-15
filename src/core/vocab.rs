@@ -17,17 +17,27 @@ use crate::core::envelope::SpeechAct;
 use spindle_core::grounding::{Substitution, apply_substitution_to_literal, match_literal};
 use spindle_core::literal::Literal;
 use spindle_core::rule::RuleType;
-use spindle_core::theory::{Meta, MetaValue};
+use spindle_core::theory::{Meta, MetaValue, Theory};
 use spindle_core::vocabulary::{
     HasPredicateSymbol, OccurrenceRole, PredicateSymbol, Vocabulary, VocabularyDiagnostic,
     is_variable_symbol,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// Reserved prefix of synthetic closure constructs (`__ct-`, `__trig-`).
-const SYNTH_PREFIX: &str = "__";
 /// Synthetic commitment-trigger rule label prefix (see `core::closure`).
 const CT_PREFIX: &str = "__ct-";
+/// Synthetic trigger-literal prefix (see `core::closure` TRIG_PREFIX).
+const TRIG_PREFIX: &str = "__trig-";
+
+/// Is this name one of the closure's own synthetic constructs? These are
+/// exactly the `__ct-<sid>` rule labels and `__trig-<sid>` literals the
+/// closure generates — never the whole `__*` namespace, which the
+/// admission grammar does not reserve: an admitted user functor such as
+/// `__user` is legal vocabulary that status and closure expose, so the
+/// view must expose it too (REQ-401).
+fn synthetic_name(name: &str) -> bool {
+    name.starts_with(CT_PREFIX) || name.starts_with(TRIG_PREFIX)
+}
 
 // ── Family (CON-402) ────────────────────────────────────────────────────
 
@@ -461,18 +471,28 @@ impl ProvenSet {
     }
 }
 
-/// The declared-task set (CON-402 `tasks`): task names X whose `task-X`
-/// fact is a proven conclusion of this closure pass.
-pub fn provable_tasks(proven: &ProvenSet) -> BTreeSet<String> {
+/// The declared-task set (CON-402 `tasks`): task names X declared by an
+/// admitted fact rule `(given task-X)` whose `task-X` atom is a proven
+/// conclusion of this closure pass. Both legs are required — CON-402
+/// says "not the rule-head set": a `task-X` atom that is merely the
+/// derived conclusion of a non-fact rule is present in the proven set
+/// but is NOT a declaration, and must not split flat families.
+pub fn provable_tasks(theory: &Theory, proven: &ProvenSet) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for (neg, spl) in &proven.keys {
-        if !neg
-            && let Some(name) = spl.strip_prefix('(').and_then(|s| s.strip_suffix(')'))
-            && !name.contains(' ')
-            && let Some(task) = name.strip_prefix("task-")
-            && !task.is_empty()
-        {
-            out.insert(task.to_string());
+    for (_, rule) in theory.rules_with_labels() {
+        if rule.rule_type != RuleType::Fact {
+            continue;
+        }
+        for head in &rule.head {
+            if head.negation || !head.predicate_args().is_empty() {
+                continue;
+            }
+            if let Some(task) = head.name().strip_prefix("task-")
+                && !task.is_empty()
+                && proven.contains(head)
+            {
+                out.insert(task.to_string());
+            }
         }
     }
     out
@@ -638,8 +658,8 @@ pub fn display_literal(l: &Literal) -> String {
 
 pub fn view(closure: &Closure) -> VocabView {
     let proven = ProvenSet::from_closure(closure);
-    let tasks = provable_tasks(&proven);
     let theory = &closure.theory;
+    let tasks = provable_tasks(theory, &proven);
 
     struct Accum {
         roles: BTreeSet<Role>,
@@ -689,7 +709,7 @@ pub fn view(closure: &Closure) -> VocabView {
     };
     for entry in &report.vocabulary.entries {
         let functor = entry.symbol.functor().to_string();
-        if functor.starts_with(SYNTH_PREFIX) {
+        if synthetic_name(&functor) {
             continue;
         }
         let fam = if entry.symbol.arity() >= 1 {
@@ -774,7 +794,7 @@ pub fn view(closure: &Closure) -> VocabView {
         }
         // Roles: every trigger/goal literal gives its family role `goal`.
         for l in &goal_lits {
-            if l.lit.name().starts_with(SYNTH_PREFIX) {
+            if synthetic_name(l.lit.name()) {
                 continue;
             }
             let fam = family(&l.lit, &tasks);
@@ -811,7 +831,7 @@ pub fn view(closure: &Closure) -> VocabView {
             && lit_joinable(&l)
             && l.predicate_args().is_empty()
             && !l.negation
-            && !l.name().starts_with(SYNTH_PREFIX)
+            && !synthetic_name(l.name())
             && !is_var_name(&l)
             && !proven.contains(&l)
         {
@@ -835,7 +855,7 @@ pub fn view(closure: &Closure) -> VocabView {
             .strip_prefix(CT_PREFIX)
             .map(str::to_string)
             .unwrap_or_else(|| label.to_string());
-        if label.starts_with(SYNTH_PREFIX) && !label.starts_with(CT_PREFIX) {
+        if synthetic_name(label) && !label.starts_with(CT_PREFIX) {
             continue;
         }
         // Every logic literal stays in the body list (a dropped conjunct
@@ -872,7 +892,7 @@ pub fn view(closure: &Closure) -> VocabView {
     //    legacy label carrier (rule labels win; built-ins frozen).
     for (sym, meta) in theory.predicate_metadata() {
         let functor = sym.functor().to_string();
-        if functor.starts_with(SYNTH_PREFIX) || builtin(&functor).is_some() {
+        if synthetic_name(&functor) || builtin(&functor).is_some() {
             continue;
         }
         if let Some(doc) = doc_from_meta(meta) {
@@ -881,7 +901,7 @@ pub fn view(closure: &Closure) -> VocabView {
         }
     }
     for (label, meta) in theory.metadata() {
-        if label.starts_with(SYNTH_PREFIX)
+        if synthetic_name(label)
             || theory.get_rule(label).is_some()
             || builtin(label).is_some()
         {
@@ -906,9 +926,12 @@ pub fn view(closure: &Closure) -> VocabView {
         // Cheap prefilter only — it must be a superset of what the parser
         // accepts: SPL allows whitespace after `(`, so gating on "(meta"
         // would let `( meta …)` redefine documentation invisibly
-        // (adversarial-review finding #1). The bare keywords cannot be
-        // split by whitespace, so this never misses a doc write.
-        if !spl.contains("meta") && !spl.contains("predicate") {
+        // (adversarial-review finding #1); and SPL quoted atoms unescape
+        // `\X` → `X` before keyword dispatch, so `("me\ta" …)` IS a meta
+        // form whose source lacks the bare byte substring — every such
+        // spelling necessarily carries a backslash, so an escape-free
+        // payload without either keyword can never write documentation.
+        if !spl.contains("meta") && !spl.contains("predicate") && !spl.contains('\\') {
             continue;
         }
         let Ok(t2) = spindle_parser::parse_spl(spl) else {
@@ -917,7 +940,7 @@ pub fn view(closure: &Closure) -> VocabView {
         let mut written: Vec<Family> = Vec::new();
         for (sym, meta) in t2.predicate_metadata() {
             let functor = sym.functor().to_string();
-            if functor.starts_with(SYNTH_PREFIX) || builtin(&functor).is_some() {
+            if synthetic_name(&functor) || builtin(&functor).is_some() {
                 continue;
             }
             if meta
@@ -930,7 +953,7 @@ pub fn view(closure: &Closure) -> VocabView {
             }
         }
         for (label, meta) in t2.metadata() {
-            if label.starts_with(SYNTH_PREFIX)
+            if synthetic_name(label)
                 || theory.get_rule(label).is_some()
                 || builtin(label).is_some()
             {
@@ -1119,7 +1142,7 @@ fn demand_from_body(
         if !entry.joinable
             || target.negation
             || is_var_name(target)
-            || target.name().starts_with(SYNTH_PREFIX)
+            || synthetic_name(target.name())
         {
             continue;
         }
@@ -1145,10 +1168,15 @@ fn demand_from_body(
         if tvars.is_empty() {
             // Ground parameterised: demanded under the empty witness —
             // every sibling must itself be an in-fragment ground proven
-            // fact (an unjoinable sibling cannot witness).
-            let witnessed = siblings
-                .iter()
-                .all(|s| s.joinable && is_ground(&s.lit) && proven.contains(&s.lit));
+            // fact (an unjoinable sibling cannot witness), and at least
+            // one such binder must exist: a ground parameterised goal
+            // with NO proven co-body binder is the REQ-401 out-of-fragment
+            // single-body / goal-only case (surfacing it needs abduction),
+            // so a vacuously-true empty sibling set emits no demand.
+            let witnessed = !siblings.is_empty()
+                && siblings
+                    .iter()
+                    .all(|s| s.joinable && is_ground(&s.lit) && proven.contains(&s.lit));
             if witnessed && !proven.contains(target) {
                 emit(fam, target.clone(), listener);
             }
@@ -1166,14 +1194,46 @@ fn demand_from_body(
         if !tvars.is_subset(&svars) {
             continue; // unbound / partially-bound — no ground demand
         }
+        // Bound the join: after each sibling, project every binding onto
+        // the variables still needed — the target's plus the remaining
+        // siblings' — and deduplicate. Witness *existence* is all demand
+        // needs, and retaining sibling-only bindings would materialise
+        // their Cartesian product (n^k for k independent siblings, each
+        // with n matching facts) before the final dedup, blowing the
+        // NFR-401 budget on a small valid corpus.
+        let mut live_after: Vec<HashSet<spindle_core::intern::SymbolId>> =
+            Vec::with_capacity(siblings.len());
+        {
+            let mut live = tvars.clone();
+            for s in siblings.iter().rev() {
+                live_after.push(live.clone());
+                live.extend(term_vars(&s.lit));
+            }
+            live_after.reverse();
+        }
         let mut bindings: Vec<Substitution> = vec![Substitution::default()];
-        for s in &siblings {
+        for (k, s) in siblings.iter().enumerate() {
             let mut next: Vec<Substitution> = Vec::new();
+            let mut kept: HashSet<Vec<(spindle_core::intern::SymbolId, spindle_core::term::Term)>> =
+                HashSet::new();
+            let mut keep = |b: &Substitution, next: &mut Vec<Substitution>| {
+                let mut proj = Substitution::default();
+                for (var, t) in &b.terms {
+                    if live_after[k].contains(var) {
+                        proj.terms.insert(*var, t.clone());
+                    }
+                }
+                let mut key: Vec<_> = proj.terms.iter().map(|(v, t)| (*v, t.clone())).collect();
+                key.sort_by_key(|&(v, _)| v);
+                if kept.insert(key) {
+                    next.push(proj);
+                }
+            };
             for b in &bindings {
                 let sb = apply_substitution_to_literal(&s.lit, b);
                 if is_ground(&sb) {
                     if proven.contains(&sb) {
-                        next.push(b.clone());
+                        keep(b, &mut next);
                     }
                     continue;
                 }
@@ -1181,7 +1241,7 @@ fn demand_from_body(
                     if let Some(m) = match_literal(&sb, g)
                         && let Some(merged) = merge_subst(b, &m)
                     {
-                        next.push(merged);
+                        keep(&merged, &mut next);
                     }
                 }
             }
@@ -1231,9 +1291,12 @@ pub fn redefinitions(closure: &Closure) -> Vec<Redefinition> {
         // Cheap prefilter only — it must be a superset of what the parser
         // accepts: SPL allows whitespace after `(`, so gating on "(meta"
         // would let `( meta …)` redefine documentation invisibly
-        // (adversarial-review finding #1). The bare keywords cannot be
-        // split by whitespace, so this never misses a doc write.
-        if !spl.contains("meta") && !spl.contains("predicate") {
+        // (adversarial-review finding #1); and SPL quoted atoms unescape
+        // `\X` → `X` before keyword dispatch, so `("me\ta" …)` IS a meta
+        // form whose source lacks the bare byte substring — every such
+        // spelling necessarily carries a backslash, so an escape-free
+        // payload without either keyword can never write documentation.
+        if !spl.contains("meta") && !spl.contains("predicate") && !spl.contains('\\') {
             continue;
         }
         let Ok(t2) = spindle_parser::parse_spl(spl) else {
@@ -1242,7 +1305,7 @@ pub fn redefinitions(closure: &Closure) -> Vec<Redefinition> {
         let mut writes: Vec<(Family, String)> = Vec::new();
         for (sym, meta) in t2.predicate_metadata() {
             let functor = sym.functor().to_string();
-            if functor.starts_with(SYNTH_PREFIX) || builtin(&functor).is_some() {
+            if synthetic_name(&functor) || builtin(&functor).is_some() {
                 continue;
             }
             for key in DOC_KEYS {
@@ -1252,7 +1315,7 @@ pub fn redefinitions(closure: &Closure) -> Vec<Redefinition> {
             }
         }
         for (label, meta) in t2.metadata() {
-            if label.starts_with(SYNTH_PREFIX)
+            if synthetic_name(label)
                 || theory.get_rule(label).is_some()
                 || builtin(label).is_some()
             {
@@ -2414,6 +2477,143 @@ mod tests {
         assert!(
             redefs.iter().any(|x| x.sid == sid),
             "journal annotation must see the whitespace variant"
+        );
+    }
+
+    #[test]
+    fn escaped_keyword_meta_is_not_invisible() {
+        // Reviewer finding: SPL quoted atoms unescape `\X` → `X` before
+        // keyword dispatch, so ("me\ta" …) IS a meta form whose source
+        // carries neither "meta" nor "predicate" as a byte substring.
+        // Provenance and the journal annotation must still see it.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(given deploy-thing)");
+        f.assert_spl(1, "(meta deploy-thing (description \"mine\"))");
+        let sid = f.assert_spl(2, r#"("me\ta" deploy-thing (description "hijack"))"#);
+        let c = f.close();
+        let v = view(&c);
+        let r = row(&v, "legacy", "deploy-thing");
+        assert_eq!(r.doc.description.as_deref(), Some("hijack"));
+        assert_eq!(
+            r.doc.documenter.as_deref(),
+            Some(did(2).as_str()),
+            "escaped keyword must still attribute the documenter"
+        );
+        assert!(r.doc.redefined, "cross-signer overwrite must flag");
+        let redefs = redefinitions(&c);
+        assert!(
+            redefs.iter().any(|x| x.sid == sid),
+            "journal annotation must see the escaped keyword"
+        );
+    }
+
+    #[test]
+    fn derived_task_head_never_splits_families() {
+        // CON-402: tasks are declared by admitted `(given task-X)` facts —
+        // never by rule heads. A rule deriving task-green must not make
+        // `is-green` resolve to family `is`.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(given go)");
+        f.assert_spl(1, "(normally r go task-green)");
+        f.assert_spl(1, "(given is-green)");
+        f.assert_spl(1, "(given task-m1)");
+        f.assert_spl(1, "(given stale-note-m1)");
+        let v = view(&f.close());
+        assert!(
+            !v.tasks.contains("green"),
+            "derived task-green is not a declaration: {:?}",
+            v.tasks
+        );
+        assert!(v.tasks.contains("m1"), "declared task-m1 still counts");
+        assert!(
+            v.rows
+                .iter()
+                .any(|r| r.family == Family::Legacy("is-green".to_string())),
+            "is-green must stay its own family"
+        );
+        assert!(
+            v.rows
+                .iter()
+                .any(|r| r.family == Family::Legacy("stale-note".to_string())),
+            "declared task m1 still splits stale-note-m1"
+        );
+    }
+
+    #[test]
+    fn ground_parameterised_goal_without_binder_is_out_of_fragment() {
+        // REQ-401 out-of-fragment: a ground parameterised goal with no
+        // proven co-body binder (the single-body / goal-only case) has no
+        // demand — an empty sibling set must not witness vacuously.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(normally r1 (qa-ok m1) done-x)");
+        let v = view(&f.close());
+        assert!(
+            !v.demands
+                .iter()
+                .any(|d| display_literal(&d.literal) == "(qa-ok m1)"),
+            "binder-less ground parameterised goal must contribute no demand"
+        );
+        assert_eq!(row(&v, "predicate", "qa-ok/1").class, Class::Active);
+
+        // With a proven flat co-body binder it re-enters the fragment.
+        let mut f2 = Fixture::new();
+        f2.assert_spl(1, "(given qa-gate)");
+        f2.assert_spl(1, "(normally r1 (and qa-gate (qa-ok m1)) done-x)");
+        let v2 = view(&f2.close());
+        assert!(
+            v2.demands
+                .iter()
+                .any(|d| display_literal(&d.literal) == "(qa-ok m1)"),
+            "proven co-body binder restores the demand"
+        );
+        assert_eq!(row(&v2, "predicate", "qa-ok/1").class, Class::Hole);
+    }
+
+    #[test]
+    fn admitted_double_underscore_vocabulary_stays_visible() {
+        // REQ-401: the admission grammar does not reserve `__*` — only the
+        // closure's own `__ct-`/`__trig-` constructs are synthetic. An
+        // admitted user fact `(given __user)` must appear in the view.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(given __user)");
+        let v = view(&f.close());
+        assert!(
+            v.rows
+                .iter()
+                .any(|r| r.family == Family::Legacy("__user".to_string())),
+            "admitted __user family must be visible: {:?}",
+            v.rows
+                .iter()
+                .map(|r| r.family.rendered())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn witness_join_dedups_sibling_only_bindings() {
+        // The join projects bindings onto the variables the target and
+        // remaining siblings need; sibling-only bindings (?a below) must
+        // neither multiply the demanded set nor blow up intermediates.
+        let mut f = Fixture::new();
+        f.assert_spl(1, "(given (assigned m1 a1))");
+        f.assert_spl(1, "(given (assigned m1 a2))");
+        f.assert_spl(1, "(given (assigned m1 a3))");
+        f.assert_spl(1, "(given (review-approved m1))");
+        f.assert_spl(
+            1,
+            "(normally r (and (ci-green ?t) (assigned ?t ?a) (review-approved ?t)) (verified2 ?t))",
+        );
+        let v = view(&f.close());
+        let demanded: Vec<String> = v
+            .demands
+            .iter()
+            .filter(|d| d.family.rendered() == "ci-green/1")
+            .map(|d| display_literal(&d.literal))
+            .collect();
+        assert_eq!(
+            demanded,
+            vec!["(ci-green m1)".to_string()],
+            "one demanded instance regardless of how many ?a witnesses"
         );
     }
 

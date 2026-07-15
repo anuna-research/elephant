@@ -211,9 +211,16 @@ fn default_true() -> bool {
 #[serde(deny_unknown_fields)]
 struct AppendBody {
     entries: Vec<Entry>,
-    /// SPEC-002 CON-101 append advisory extension (0.1.3): enabled by
-    /// default; a client's `--no-advice` sends `false`; omission preserves
-    /// the pre-advisory body shape.
+}
+
+/// SPEC-002 CON-101 append advisory extension (0.1.3): the `advice`
+/// control is a query parameter, enabled by default; a client's
+/// `--no-advice` sends `?advice=false`. A query parameter, not a body
+/// field: the body stays byte-identical to the pre-advisory shape, and a
+/// pre-advisory daemon (same API version, `deny_unknown_fields` body)
+/// ignores an unextracted query string instead of rejecting the append.
+#[derive(Deserialize)]
+struct AppendQuery {
     #[serde(default = "default_true")]
     advice: bool,
 }
@@ -221,6 +228,7 @@ struct AppendBody {
 async fn append_entries(
     State(state): State<AppState>,
     AxPath(theory): AxPath<String>,
+    Query(q): Query<AppendQuery>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
@@ -252,7 +260,7 @@ async fn append_entries(
         // SPEC-005 REQ-406: evaluate the advisory against the reference
         // view *before* applying the append (it must reflect exactly the
         // entries preceding this one); any failure degrades to None.
-        let advisory = if req.advice {
+        let advisory = if q.advice {
             // Degradation clause (REQ-406): ANY failure of the advisory
             // computation — including a panic or a poisoned cache mutex —
             // yields no advisory, never a failed append.
@@ -299,8 +307,14 @@ fn compute_advisory(
         return None;
     };
     // Sole form is a fact: exactly one fact rule, one head, and nothing
-    // else riding in the payload (no metadata, declarations, preferences).
+    // else riding in the payload — no metadata, declarations, preferences,
+    // or trust directives. `trusts`/`decays`/`threshold` forms leave the
+    // rule and metadata collections untouched (spindle stores them only in
+    // `Theory::trust_policy`), so the policy maps must be checked too or a
+    // payload like `(given stray) (trusts alice 1.0)` would pass as a
+    // sole-fact assert and advise on a multi-form payload (REQ-406).
     let t = spindle_parser::parse_spl(&spl).ok()?;
+    let tp = t.trust_policy();
     let mut rules = t.rules();
     let fact = rules.next()?;
     if rules.next().is_some()
@@ -310,6 +324,9 @@ fn compute_advisory(
         || !t.predicate_metadata().is_empty()
         || !t.predicate_declarations().is_empty()
         || !t.superiorities().is_empty()
+        || !tp.trust_map.is_empty()
+        || !tp.thresholds.is_empty()
+        || !tp.decay_map.is_empty()
     {
         return None;
     }
