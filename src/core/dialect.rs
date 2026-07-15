@@ -6,7 +6,9 @@
 //! tampered vendored file fails at startup, not at message time.
 
 use crate::errors::{AppError, AppResult};
+use cbcl_core::canonical::dialect_canonical_bytes;
 use cbcl_core::dialect::{Dialect, DialectRegistry};
+use sha2::{Digest, Sha256};
 
 /// Vendored verbatim from ../cbcl-rs/dialects/elephant.cbcl.
 pub const DIALECT_TEXT: &str = include_str!("../../vendor/cbcl-elephant.cbcl");
@@ -23,6 +25,19 @@ pub fn load_dialect() -> AppResult<Dialect> {
         .map_err(|e| AppError::Internal(format!("vendored dialect unparseable: {e:?}")))?;
     cbcl_parser::parse_dialect(&sexpr)
         .map_err(|e| AppError::Internal(format!("vendored dialect invalid: {e}")))
+}
+
+/// Canonical content hash of the vendored dialect (protocol identity).
+///
+/// Computed as `sha256` over cbcl-rs's canonical dialect bytes
+/// (`dialect_canonical_bytes`) — the same bytes used for signing — so a
+/// silent change to the vendored file or to cbcl-rs canonicalisation moves
+/// this value. The self-declared `:hash` field (if any) is deliberately not
+/// trusted here; we recompute from content.
+pub fn dialect_hash() -> AppResult<String> {
+    let d = load_dialect()?;
+    let digest = Sha256::digest(dialect_canonical_bytes(&d));
+    Ok(format!("sha256:{digest:x}"))
 }
 
 /// Registry with cbcl-base + cbcl-elephant installed (R1/R2/R3/R5/R6 checked).
@@ -53,9 +68,7 @@ mod tests {
     /// file (or to cbcl-rs canonicalisation) must break the build visibly.
     #[test]
     fn dialect_hash_is_pinned() {
-        let reg = registry().unwrap();
-        let d = reg.find_by_name(DIALECT_NAME).unwrap();
-        let hash = d.hash.as_deref().expect("hash computed on install");
+        let hash = dialect_hash().expect("dialect hashes");
         assert_eq!(
             hash, PINNED_DIALECT_HASH,
             "cbcl-elephant dialect hash changed — protocol identity moved; \
