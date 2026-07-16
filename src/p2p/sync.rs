@@ -239,25 +239,32 @@ async fn dial_targets<K, F, Fut>(
     F: Fn(String, String, K) -> Fut + Clone + Send + Sync + 'static,
     Fut: std::future::Future<Output = AppResult<usize>> + Send + 'static,
 {
-    let sem = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
-    let mut set = tokio::task::JoinSet::new();
+    let limit = concurrency.max(1);
+    let mut set: tokio::task::JoinSet<(String, String, Result<usize, String>)> =
+        tokio::task::JoinSet::new();
     for (theory, pk, key) in targets {
-        let sem = sem.clone();
+        // Cap *live tasks*, not just sockets: reap a finished dial before
+        // spawning past the limit, so a large roster cannot create an
+        // unbounded number of tasks or sockets (#18). A completed task reaps
+        // instantly; if all `limit` are still running, this waits for one.
+        while set.len() >= limit {
+            if let Some(Ok((theory, pk, outcome))) = set.join_next().await {
+                on_result(theory, pk, outcome);
+            }
+        }
         let dial = dial.clone();
         set.spawn(async move {
-            // Held for the dial's life; bounds concurrent sockets/tasks.
-            let _permit = sem.acquire_owned().await;
-            let outcome = tokio::time::timeout(per_dial_timeout, dial(theory.clone(), pk.clone(), key))
-                .await
-                .map_err(|_| "dial timed out".to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()));
+            let outcome =
+                tokio::time::timeout(per_dial_timeout, dial(theory.clone(), pk.clone(), key))
+                    .await
+                    .map_err(|_| "dial timed out".to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()));
             (theory, pk, outcome)
         });
     }
     while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok((theory, pk, outcome)) => on_result(theory, pk, outcome),
-            Err(e) => tracing::debug!("dial task join error: {e}"),
+        if let Ok((theory, pk, outcome)) = joined {
+            on_result(theory, pk, outcome);
         }
     }
 }

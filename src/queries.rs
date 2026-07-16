@@ -396,11 +396,16 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
     // returned body-satisfaction candidates that an applicable defeater or a
     // competing rule could still block — a remedy the operator would assert
     // in vain. `search_status` records whether the search was exhaustive.
+    // Cap on solutions returned. Spindle reports `BoundedComplete` as soon as
+    // this many are accepted, even if more verified solutions remain, so hitting
+    // the cap is treated as non-exhaustive below rather than claiming the search
+    // was complete (#16 review).
+    const MAX_SOLUTIONS: usize = 8;
     let r = requires_with_options(
         &v.closure.theory,
         &lit,
         RequiresOptions {
-            max_solutions: 8,
+            max_solutions: MAX_SOLUTIONS,
             max_raw_candidates: DEFAULT_MAX_RAW_CANDIDATES,
         },
     )
@@ -418,7 +423,11 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
             f
         })
         .collect();
-    let exhaustive = matches!(r.search_status, RequiresSearchStatus::BoundedComplete);
+    // Exhaustive only if the search terminated within bounds AND the returned
+    // count did not hit the solution cap (spindle reports BoundedComplete on
+    // reaching `max_solutions`, which is not the same as "no more exist").
+    let exhaustive = matches!(r.search_status, RequiresSearchStatus::BoundedComplete)
+        && solutions.len() < MAX_SOLUTIONS;
     if ctx.json {
         let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
             "already_provable": already, "solutions": solutions,
