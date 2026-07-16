@@ -475,8 +475,20 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
     }
     let mut items: Vec<serde_json::Value> = Vec::new();
     for a in &v.closure.admitted {
+        // Every entry gets a stable, individually-addressable `entry_id`
+        // derived from (theory, signer, hlc) — the same derivation the
+        // producer uses for a sentence-id, so for an assert it equals `sid`.
+        // Retracts (and concedes) carry no `sid` of their own, so without
+        // this an order-independent journal fingerprint keyed on `sid`
+        // silently collapses every retract onto `null` (#14).
+        let entry_id = crate::core::envelope::Entry::sentence_id(
+            &v.store.theory_id,
+            &a.entry.signer,
+            a.entry.hlc,
+        );
         let mut item = serde_json::json!({
             "sid": a.sid,
+            "entry_id": entry_id,
             "signer": a.entry.signer,
             "performative": a.act.performative(),
             "hlc": {"wall_ms": a.entry.hlc.wall_ms, "logical": a.entry.hlc.logical},
@@ -489,6 +501,11 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
             },
             "cbcl": a.entry.cbcl,
         });
+        // A retract's target was only reachable inside the opaque `cbcl`
+        // blob; surface it as a first-class field so retracts are addressable.
+        if let crate::core::envelope::SpeechAct::Retract { target, .. } = &a.act {
+            item["retracts"] = serde_json::json!(target);
+        }
         let mine: Vec<serde_json::Value> = redefs
             .iter()
             .filter(|r| Some(&r.sid) == a.sid.as_ref())
@@ -507,8 +524,11 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
         items.push(item);
     }
     for (e, q) in &v.closure.quarantined {
+        let entry_id =
+            crate::core::envelope::Entry::sentence_id(&v.store.theory_id, &e.signer, e.hlc);
         items.push(serde_json::json!({
             "sid": null,
+            "entry_id": entry_id,
             "signer": e.signer,
             "performative": null,
             "hlc": {"wall_ms": e.hlc.wall_ms, "logical": e.hlc.logical},
@@ -541,12 +561,23 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
                         .join("")
                 })
                 .unwrap_or_default();
+            // Identify by the act's own sid where it has one, else the stable
+            // entry_id (retracts/concedes) so every line is addressable.
+            let id = i["sid"]
+                .as_str()
+                .or_else(|| i["entry_id"].as_str())
+                .unwrap_or("-");
+            let retracts = i["retracts"]
+                .as_str()
+                .map(|t| format!(" → {t}"))
+                .unwrap_or_default();
             println!(
-                "{}  {:<9} {:<8} {}{}",
+                "{}  {:<9} {:<8} {}{}{}",
                 i["hlc"]["wall_ms"],
                 i["performative"].as_str().unwrap_or("?"),
                 i["status"].as_str().unwrap_or("?"),
-                i["sid"].as_str().unwrap_or("-"),
+                id,
+                retracts,
                 redef,
             );
         }

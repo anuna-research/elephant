@@ -242,6 +242,57 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #14: retract entries are individually addressable — a stable `entry_id`
+/// and a first-class `retracts` target — so an order-independent journal
+/// fingerprint no longer collapses every retract onto a null `sid`.
+#[test]
+fn log_retracts_are_addressable() {
+    let e = Env::new();
+    let a1 = e.json(&["assert", "one", "-t", "release"]);
+    let sid1 = a1["receipt"].as_str().unwrap().to_string();
+    let a2 = e.json(&["assert", "two", "-t", "release"]);
+    let sid2 = a2["receipt"].as_str().unwrap().to_string();
+    e.ok(&["retract", &sid1, "-t", "release"]);
+    e.ok(&["retract", &sid2, "-t", "release"]);
+
+    let log = e.json(&["log", "-t", "release"]);
+    let entries = log["entries"].as_array().unwrap();
+
+    // Every entry carries a stable, non-null entry_id, and they are distinct
+    // even across the two retracts (which both have a null `sid`).
+    let ids: Vec<&str> = entries
+        .iter()
+        .map(|x| {
+            let id = x["entry_id"].as_str().expect("every entry has an entry_id");
+            assert!(!id.is_empty());
+            id
+        })
+        .collect();
+    let mut uniq = ids.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    assert_eq!(uniq.len(), ids.len(), "entry_ids must be distinct: {ids:?}");
+
+    // Each retract names its target sid as a first-class field, with sid null.
+    let retracts: Vec<(&str, Option<&str>)> = entries
+        .iter()
+        .filter(|x| x["performative"] == "retract")
+        .map(|x| (x["retracts"].as_str().unwrap(), x["sid"].as_str()))
+        .collect();
+    assert_eq!(retracts.len(), 2);
+    assert!(retracts.iter().all(|(_, sid)| sid.is_none()), "retract sid stays null");
+    let targets: Vec<&str> = retracts.iter().map(|(t, _)| *t).collect();
+    assert!(targets.contains(&sid1.as_str()), "retracts sid1: {targets:?}");
+    assert!(targets.contains(&sid2.as_str()), "retracts sid2: {targets:?}");
+
+    // For an assert, entry_id equals its own sentence-id (same derivation).
+    let assert1 = entries
+        .iter()
+        .find(|x| x["sid"].as_str() == Some(sid1.as_str()))
+        .unwrap();
+    assert_eq!(assert1["entry_id"].as_str(), Some(sid1.as_str()));
+}
+
 /// #13: explain on a blocked literal is a self-describing stub, not a bare
 /// `null` that reads like a serialization failure.
 #[test]
