@@ -242,6 +242,30 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #10: describe --json meta values are plain JSON strings, not Rust Debug
+/// (`String("…")`) wrappers. The --json contract is a stable data interface.
+#[test]
+fn describe_json_meta_values_are_plain_strings() {
+    let e = Env::new();
+    e.ok(&[
+        "assert",
+        "(meta deploy-thing (description \"ship it\"))",
+        "-t",
+        "release",
+    ]);
+    let d = e.json(&["describe", "deploy-thing", "-t", "release"]);
+    let meta = &d["labels"][0]["meta"];
+    assert_eq!(
+        meta["description"], "ship it",
+        "meta value must be a plain JSON string, not a Debug-wrapped String(\"…\"): {meta}"
+    );
+    // Guard the exact regression: no Rust Debug syntax may survive into JSON.
+    assert!(
+        !d.to_string().contains("String("),
+        "no Debug String(…) wrapper may leak into describe --json: {d}"
+    );
+}
+
 // ── SPEC-005 TEST-405: docs join in why-not / require ───────────────────
 
 /// Documented and built-in families join why-not/require output; the docs

@@ -550,6 +550,20 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
 
 // ── describe / trace (SPEC-003 REQ-208) ─────────────────────────────────
 
+/// A meta property value as plain JSON — a string stays a string, a list
+/// becomes a JSON array. The `--json` contract (SPEC-003 REQ-208) is a stable
+/// data interface: rendering `MetaValue` through `Debug` (`format!("{val:?}")`)
+/// leaked Rust syntax (`String("…")`) that every consumer then had to strip.
+fn meta_value_json(val: &spindle_core::theory::MetaValue) -> serde_json::Value {
+    use spindle_core::theory::MetaValue;
+    match val {
+        MetaValue::String(s) => serde_json::Value::String(s.clone()),
+        MetaValue::List(items) => {
+            serde_json::Value::Array(items.iter().cloned().map(serde_json::Value::String).collect())
+        }
+    }
+}
+
 pub fn describe(ctx: &Ctx, labels: &[String]) -> AppResult<()> {
     let v = view(ctx)?;
     let mut out = Vec::new();
@@ -557,11 +571,11 @@ pub fn describe(ctx: &Ctx, labels: &[String]) -> AppResult<()> {
         let rule = v.closure.theory.get_rule(label);
         let meta = v.closure.theory.get_meta(label);
         let props: serde_json::Value = match meta {
-            Some(m) => serde_json::json!(
+            Some(m) => serde_json::Value::Object(
                 m.properties
                     .iter()
-                    .map(|(k, val)| (k.clone(), format!("{val:?}")))
-                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .map(|(k, val)| (k.clone(), meta_value_json(val)))
+                    .collect(),
             ),
             None => serde_json::json!({}),
         };
