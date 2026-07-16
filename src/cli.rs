@@ -144,6 +144,16 @@ pub enum Command {
     },
     /// Commitment ledger with derived states
     Commitments,
+    /// Inspect a single entry by its sentence-id
+    ///
+    /// The read counterpart to the sentence-ids that `assert`/`define` mint
+    /// and `retract`/`concede --re` consume: prints the one entry — speech
+    /// act, SPL/literal form, signer, HLC timestamp, in-reply-to, and status
+    /// (active/retracted/shadowed) — instead of dumping the whole journal and
+    /// filtering client-side. `--json` emits the raw entry object.
+    ///
+    /// Example: elephant -t release show s-322fd6e1474dda9e
+    Show { sentence_id: String },
     /// The full journal — every entry, including quarantined
     Log,
     /// Stream tag changes for a literal
@@ -368,6 +378,7 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Require { literal } => crate::queries::require(&ctx, &literal),
         Command::WhatIf { facts_then_goal } => crate::queries::what_if(&ctx, &facts_then_goal),
         Command::Commitments => crate::queries::commitments(&ctx),
+        Command::Show { sentence_id } => crate::queries::show(&ctx, &sentence_id),
         Command::Log => crate::queries::log(&ctx),
         Command::Describe { labels } => crate::queries::describe(&ctx, &labels),
         Command::Trace => crate::queries::trace(&ctx),

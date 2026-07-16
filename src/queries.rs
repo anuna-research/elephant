@@ -487,6 +487,118 @@ pub fn commitments(ctx: &Ctx) -> AppResult<()> {
     Ok(())
 }
 
+// ── show: inspect one entry by sentence-id (#9) ─────────────────────────
+
+/// The read counterpart to the sentence-ids that producers mint: locate the
+/// single admitted entry the id names and print it, rather than forcing a
+/// `log --json | jq 'select(.sentence_id==…)'` round-trip. Reuses the same
+/// by-id lookup and the same "no entry with sentence-id …" miss error the
+/// retract/concede pre-checks use (src/cli.rs).
+pub fn show(ctx: &Ctx, sentence_id: &str) -> AppResult<()> {
+    use crate::core::envelope::SpeechAct;
+    let v = view(ctx)?;
+    let a = v
+        .closure
+        .admitted
+        .iter()
+        .find(|a| a.sid.as_deref() == Some(sentence_id))
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "no entry with sentence-id {sentence_id} in this theory"
+            ))
+        })?;
+
+    let status = if a.retracted {
+        "retracted"
+    } else if a.label_shadowed {
+        "shadowed"
+    } else {
+        "active"
+    };
+    let timestamp = chrono::DateTime::from_timestamp_millis(a.entry.hlc.wall_ms as i64)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default();
+
+    // Act-specific projection: the SPL/literal form, plus the two back-refs a
+    // speech act can carry (concede → in_reply_to, retract → retracts).
+    let (spl_form, in_reply_to, retracts): (Option<String>, Option<String>, Option<String>) =
+        match &a.act {
+            SpeechAct::Assert { spl, .. } => (Some(spl.clone()), None, None),
+            SpeechAct::Commit {
+                goal, trigger, by, ..
+            } => {
+                let mut s = format!("commit {goal}");
+                if !trigger.is_empty() {
+                    s.push_str(&format!(" when {trigger}"));
+                }
+                if let Some(b) = by {
+                    s.push_str(&format!(" by {b}"));
+                }
+                (Some(s), None, None)
+            }
+            SpeechAct::Request {
+                goal,
+                addressee,
+                trigger,
+                ..
+            } => {
+                let mut s = format!("request {addressee} {goal}");
+                if !trigger.is_empty() {
+                    s.push_str(&format!(" when {trigger}"));
+                }
+                (Some(s), None, None)
+            }
+            SpeechAct::Retract { target, reason } => {
+                let s = if reason.is_empty() {
+                    "retract".into()
+                } else {
+                    format!("retract ({reason})")
+                };
+                (Some(s), None, Some(target.clone()))
+            }
+            SpeechAct::Concede {
+                literal,
+                in_reply_to: irt,
+            } => (Some(literal.clone()), Some(irt.clone()), None),
+            other => (Some(other.performative().to_string()), None, None),
+        };
+
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "v": 1,
+                "theory": v.store.theory_id,
+                "sentence_id": sentence_id,
+                "performative": a.act.performative(),
+                "signer": a.entry.signer,
+                "hlc": {"wall_ms": a.entry.hlc.wall_ms, "logical": a.entry.hlc.logical},
+                "timestamp": timestamp,
+                "status": status,
+                "spl_form": spl_form,
+                "in_reply_to": in_reply_to,
+                "retracts": retracts,
+                "entry": serde_json::to_value(&a.entry).unwrap_or(serde_json::Value::Null),
+            })
+        );
+    } else {
+        println!("{}  {sentence_id}", a.act.performative());
+        if let Some(s) = &spl_form {
+            println!("  {}", crate::core::vocab::escape_controls(s));
+        }
+        println!("  signer   {}", a.entry.signer);
+        println!("  hlc      {timestamp}  (logical {})", a.entry.hlc.logical);
+        if let Some(r) = &in_reply_to {
+            println!("  re       {r}");
+        }
+        if let Some(t) = &retracts {
+            println!("  retracts {t}");
+        }
+        println!("  status   {status}");
+    }
+    Ok(())
+}
+
 // ── log / journal (REQ-016) ─────────────────────────────────────────────
 
 pub fn log(ctx: &Ctx) -> AppResult<()> {

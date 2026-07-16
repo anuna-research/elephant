@@ -242,6 +242,40 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #9: `show <sentence-id>` inspects one entry without dumping the journal;
+/// a miss reuses the same "no entry with sentence-id …" error.
+#[test]
+fn show_inspects_single_entry_by_id() {
+    let e = Env::new();
+    let a = e.json(&["assert", "qa-signed", "-t", "release"]);
+    let sid = a["receipt"].as_str().unwrap().to_string();
+
+    let s = e.json(&["show", &sid, "-t", "release"]);
+    assert_eq!(s["sentence_id"].as_str(), Some(sid.as_str()));
+    assert_eq!(s["performative"], "assert");
+    assert_eq!(s["status"], "active");
+    assert!(s["spl_form"].as_str().unwrap().contains("qa-signed"));
+    assert!(!s["signer"].as_str().unwrap().is_empty());
+    assert!(!s["entry"].is_null(), "raw entry object present in --json");
+
+    // After retraction the same id shows status retracted.
+    e.ok(&["retract", &sid, "-t", "release"]);
+    let s2 = e.json(&["show", &sid, "-t", "release"]);
+    assert_eq!(s2["status"], "retracted");
+
+    // A miss is a clean not-found, not a crash.
+    let out = e
+        .cmd()
+        .args(["show", "s-doesnotexist0000", "-t", "release"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no entry with sentence-id"),
+        "miss must reuse the standard not-found error"
+    );
+}
+
 /// #11: what-if rejects a `(prefer …)`/rule hypothetical with a clear error
 /// instead of silently coercing it into an inert fact and reporting no change.
 #[test]
