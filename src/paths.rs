@@ -35,6 +35,27 @@ impl Paths {
         })
     }
 
+    /// Where the resolved home came from — the `ELEPHANT_HOME` override or the
+    /// platform default. Surfaced by `elephant info` so "one home = one
+    /// identity = one steward" is legible and a wrong home is self-diagnosing
+    /// rather than looking like data loss (SPEC-001 CON-005, #8).
+    pub fn home_source() -> &'static str {
+        if std::env::var_os("ELEPHANT_HOME").is_some() {
+            "ELEPHANT_HOME"
+        } else {
+            "platform default"
+        }
+    }
+
+    /// True when the resolved home sits under an ephemeral/world-writable root.
+    /// Durable state there (`create`, `assert`, `join`) is silently lost on
+    /// reboot, and nothing else signals it (#8).
+    pub fn is_ephemeral(&self) -> bool {
+        ["/tmp/", "/private/tmp/", "/var/tmp/"]
+            .iter()
+            .any(|root| self.home.starts_with(root))
+    }
+
     pub fn identity_dir(&self) -> PathBuf {
         self.home.join("identity")
     }

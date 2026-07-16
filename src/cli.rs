@@ -58,6 +58,13 @@ pub enum Command {
     /// Sync daemon lifecycle
     #[command(subcommand)]
     Daemon(DaemonCmd),
+    /// Show the active store (ELEPHANT_HOME), identity, and held theories
+    ///
+    /// Names the resolved home, whether it came from `ELEPHANT_HOME` or the
+    /// platform default, the local DID, and the theories held there — so
+    /// "one home = one identity = one steward" is legible at a glance and a
+    /// wrong or empty store is self-diagnosing (SPEC-001 CON-005).
+    Info,
 
     // ── producers (SPEC-001 REQ-005..009) ──
     /// Assert an SPL statement (or bare literal) into a theory
@@ -384,6 +391,7 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Trace => crate::queries::trace(&ctx),
         Command::Dag { focus } => crate::dag::dag(&ctx, focus.as_deref()),
         Command::Daemon(cmd) => handle_daemon(&ctx, cmd),
+        Command::Info => handle_info(&ctx),
         Command::Watch { literal } => watch_cmd(&ctx, &literal),
     }
 }
@@ -404,8 +412,22 @@ struct Producer {
     _clock: crate::store::ClockGuard,
 }
 
+/// Warn (to stderr) when a write targets an ephemeral home (#8): durable state
+/// under `/tmp` is lost on reboot and nothing else signals it. Advisory only —
+/// it never blocks the write and never touches the `--json` stdout contract.
+fn warn_if_ephemeral(ctx: &Ctx) {
+    if ctx.paths.is_ephemeral() {
+        eprintln!(
+            "warning: ELEPHANT_HOME is under an ephemeral path ({}) — \
+             durable state here is lost on reboot",
+            ctx.paths.home.display()
+        );
+    }
+}
+
 fn producer(ctx: &Ctx) -> AppResult<Producer> {
     refuse_at_on_write(ctx, "a producer command")?;
+    warn_if_ephemeral(ctx);
     let theory = ctx
         .theory
         .as_deref()
@@ -888,6 +910,7 @@ fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
     match cmd {
         TheoryCmd::Create { name } => {
             refuse_at_on_write(ctx, "theory create")?;
+            warn_if_ephemeral(ctx);
             let ident = crate::id::load(&ctx.paths)?;
             let (wall_ms, ts) = now_pair();
             let store = crate::store::TheoryStore::create(&ctx.paths, &ident, &name, wall_ms, &ts)?;
@@ -932,6 +955,7 @@ fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
         }
         TheoryCmd::Join { code, alias } => {
             refuse_at_on_write(ctx, "theory join")?;
+            warn_if_ephemeral(ctx);
             crate::p2p::run::join_theory(ctx, code.as_deref(), alias.as_deref())
         }
         TheoryCmd::Members { theory } => crate::p2p::run::members(ctx, &theory),
@@ -1000,6 +1024,55 @@ fn handle_id(ctx: &Ctx, cmd: IdCmd) -> AppResult<()> {
     }
 }
 
+/// `elephant info` — the active store, identity, and held theories (#8).
+/// Makes the split-brain of "a machine with several homes" self-diagnosing:
+/// which `ELEPHANT_HOME` am I on, whose identity, and what does it hold.
+fn handle_info(ctx: &Ctx) -> AppResult<()> {
+    let home = ctx.paths.home.display().to_string();
+    let source = crate::paths::Paths::home_source();
+    let ephemeral = ctx.paths.is_ephemeral();
+    let ident = crate::id::load(&ctx.paths).ok();
+    let theories = crate::store::list_theories(&ctx.paths).unwrap_or_default();
+
+    if ctx.json {
+        let items: Vec<_> = theories
+            .iter()
+            .map(|(m, n)| {
+                serde_json::json!({"theory": m.theory_id, "alias": m.alias, "entries": n})
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "v": 1,
+                "store": home,
+                "store_source": source,
+                "ephemeral": ephemeral,
+                "did": ident.as_ref().map(|i| i.did.to_string()),
+                "name": ident.as_ref().map(|i| i.profile.name.clone()),
+                "theories": items,
+            })
+        );
+    } else {
+        println!("store   {home}  ({source})");
+        if ephemeral {
+            println!("        ⚠ ephemeral home — state here is lost on reboot");
+        }
+        match &ident {
+            Some(i) => println!("did     {}\nagent   {}", i.did, i.profile.name),
+            None => println!("did     (no identity yet — `elephant id create`)"),
+        }
+        if theories.is_empty() {
+            println!("theories (none)");
+        } else {
+            for (m, n) in &theories {
+                println!("theory  {:<20} {:>5} entries  {}", m.alias, n, m.theory_id);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn print_identity(ctx: &Ctx, ident: &crate::id::Identity, created: bool) {
     if ctx.json {
         println!(
@@ -1049,23 +1122,28 @@ fn handle_daemon(ctx: &Ctx, cmd: DaemonCmd) -> AppResult<()> {
                     println!("{st}");
                 } else {
                     println!(
-                        "running  pid {}  uptime {}s  theories {}",
+                        "running  pid {}  uptime {}s  theories {}  store {}",
                         st["pid"],
                         st["uptime_s"],
-                        st["theories"].as_array().map(|a| a.len()).unwrap_or(0)
+                        st["theories"].as_array().map(|a| a.len()).unwrap_or(0),
+                        st["home"].as_str().unwrap_or("?"),
                     );
                 }
                 Ok(())
             }
             other => {
+                // Name the store searched (#8): "not running" for a shell on a
+                // different home than its launchd daemon is otherwise
+                // indistinguishable from a genuinely stopped daemon.
+                let store = ctx.paths.home.display().to_string();
                 if ctx.json {
                     println!(
                         "{}",
                         serde_json::json!({"v":1, "running": false,
-                            "state": format!("{other:?}")})
+                            "state": format!("{other:?}"), "store": store})
                     );
                 } else {
-                    println!("not running ({other:?})");
+                    println!("not running ({other:?}) in store {store}");
                 }
                 Ok(())
             }

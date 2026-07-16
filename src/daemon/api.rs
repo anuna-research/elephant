@@ -220,6 +220,10 @@ async fn status(
         Json(serde_json::json!({
             "v": 1,
             "pid": std::process::id(),
+            // The daemon's own resolved store (#8): a shell and its daemon on
+            // different homes (the launchd-vs-interactive split) otherwise
+            // manifests only as "sync silently does nothing".
+            "home": state.paths.home.display().to_string(),
             "uptime_s": state.started_at.elapsed().as_secs(),
             "theories": theories,
             "counters": {

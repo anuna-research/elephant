@@ -199,16 +199,23 @@ impl TheoryStore {
     /// RFC 1123 §2.1's "check the syntax before lookup" — and raw input is
     /// never joined into a filesystem path.
     pub fn open(paths: &Paths, id_or_alias: &str) -> AppResult<TheoryStore> {
+        // Name the store in a miss (#8): a machine with several homes
+        // (default, a /tmp dry-run home, a per-experiment home) silently
+        // splits into disjoint stores, and a bare "no such id" then reads like
+        // data loss rather than a wrong home.
+        let store = paths.home.display();
         let theory_id = if is_valid_theory_id(id_or_alias) {
             if !paths.theory_dir(id_or_alias).is_dir() {
                 return Err(AppError::NotFound(format!(
-                    "theory '{id_or_alias}' (no such theory id)"
+                    "theory '{id_or_alias}' (no such theory id in store {store})"
                 )));
             }
             id_or_alias.to_string()
         } else if is_valid_alias(id_or_alias) {
             resolve_alias(paths, id_or_alias)?.ok_or_else(|| {
-                AppError::NotFound(format!("theory '{id_or_alias}' (no such id or alias)"))
+                AppError::NotFound(format!(
+                    "theory '{id_or_alias}' (no such id or alias in store {store})"
+                ))
             })?
         } else {
             return Err(alias_error(id_or_alias));

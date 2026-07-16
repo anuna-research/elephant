@@ -35,6 +35,74 @@ impl Env {
     }
 }
 
+// ── #8: the active store (ELEPHANT_HOME) is observable ─────────────────
+
+/// `info` names the resolved store, where it came from, the identity, and the
+/// theories held there — so a wrong or empty home is self-diagnosing.
+#[test]
+fn info_reports_active_store_and_identity() {
+    let env = Env::new();
+    env.setup_theory();
+    let out = env.cmd().args(["info", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["store"].as_str(), Some(env.home.as_str()));
+    assert_eq!(v["store_source"], "ELEPHANT_HOME");
+    assert!(v["did"].as_str().unwrap().starts_with("did:crdt:"));
+    assert_eq!(v["name"], "alice");
+    assert_eq!(v["theories"][0]["alias"], "release");
+}
+
+/// A theory miss names the store searched, so it reads as a wrong home rather
+/// than data loss.
+#[test]
+fn not_found_error_names_the_store() {
+    let env = Env::new();
+    env.setup_theory();
+    env.cmd()
+        .args(["status", "-t", "nonesuch"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("in store"))
+        .stderr(predicate::str::contains(&env.home));
+}
+
+/// `daemon status` names the store it inspected, so a shell on a different
+/// home than its (launchd) daemon is visible instead of a bare "not running".
+#[test]
+fn daemon_status_names_the_store() {
+    let env = Env::new();
+    env.setup_theory();
+    env.cmd()
+        .args(["daemon", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("store"))
+        .stdout(predicate::str::contains(&env.home));
+}
+
+/// A write to an ephemeral (`/tmp`) home warns that state is lost on reboot;
+/// the write itself still succeeds.
+#[test]
+fn ephemeral_home_warns_on_write() {
+    let tmp = tempfile::Builder::new()
+        .prefix("ele-ephemeral-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let home = tmp.path().to_string_lossy().to_string();
+    let mut c = Command::cargo_bin("elephant").unwrap();
+    c.env("ELEPHANT_HOME", &home)
+        .args(["id", "create", "--name", "alice"])
+        .assert()
+        .success();
+    let mut c = Command::cargo_bin("elephant").unwrap();
+    c.env("ELEPHANT_HOME", &home)
+        .args(["theory", "create", "release"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ephemeral"));
+}
+
 // ── item 1: `theory remove` confirms before acting ─────────────────────
 
 /// Non-interactive removal without --force is refused before any state
