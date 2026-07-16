@@ -234,6 +234,7 @@ pub fn members(ctx: &Ctx, theory: &str) -> AppResult<()> {
         json: ctx.json,
         theory: Some(theory.to_string()),
         at: ctx.at.clone(),
+        verbose: ctx.verbose,
     };
     let view = crate::queries::view(&sub)?;
     // member facts: (member "<did>" "<node-pk>")

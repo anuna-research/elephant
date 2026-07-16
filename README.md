@@ -215,6 +215,49 @@ Notes:
 - Add a `RUST_LOG` key (e.g. `elephant=debug`) to `EnvironmentVariables`
   for sync-session tracing in the log file.
 
+### Convergence, inspection & reproducibility
+
+Every conclusion carries both the compact proof tag (`+D`/`+d`/`-D`/`-d`) and
+its canonical plain-language reading, so API clients never have to invent a
+gloss. The mapping is versioned (`proof_state_map`) and shared across `status`,
+`trace`, and `what-if`; `-v` shows the name in text too:
+
+```bash
+elephant status -t release --json
+#   {"literal":"release-ready","tag":"+d",
+#    "proof_state":"defeasibly_provable","positive":true,"level":"defeasible", …}
+elephant -v status -t release            #   +d  release-ready  [defeasibly_provable]
+```
+
+Two replicas (or a clean replay) can check they reached the **same semantic
+closure** with a canonical, versioned fingerprint — no `jq | shasum`. It hashes
+every non-membership conclusion's proof tag and excludes everything
+identity-specific (membership, local aliases, theory id, signers, timestamps),
+so the same corpus under a different identity fingerprints the same, and a
+single changed tag changes the digest:
+
+```bash
+elephant closure fingerprint -t release             # sha256:… (algorithm elephant.closure.v1)
+elephant status -t release --fingerprint --json     # same digest, embedded in status
+elephant closure compare status-a.json status-b.json  # exit 0 match · exit 10 mismatch
+```
+
+`theory list` shows one journal total that is easy to misread as a count of
+active statements. `theory inspect` breaks it down from the same status
+semantics `log` uses, and `log` takes composable (AND) filters:
+
+```bash
+elephant theory inspect release
+#   journal entries       53
+#   active assertions     41
+#     setup (meta/member)  3
+#     content             38
+#   retracted assertions   6
+#   retractions            6
+elephant log -t release --status active --performative assert
+elephant log -t release --signer did:crdt:… --retracts s-…
+```
+
 ## Architecture
 
 Four sibling libraries do the load-bearing work; elephant is the glue.

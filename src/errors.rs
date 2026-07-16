@@ -4,6 +4,9 @@
 //!   0 success · 1 usage · 2 config/identity · 3 parse/validation
 //!   4 signature/verification · 5 E1 violation · 6 reasoner exhaustion
 //!   7 transport/daemon · 8 not-found · 9 internal (incl. unimplemented)
+//!  10 predicate-not-satisfied — a checked condition ran cleanly but did not
+//!     hold (e.g. `closure compare` mismatch, #20). Distinct from an error:
+//!     the command did its job; the answer is "no".
 
 use std::fmt;
 
@@ -20,6 +23,8 @@ pub enum Exit {
     Transport = 7,
     NotFound = 8,
     Internal = 9,
+    /// A checked predicate ran to completion but did not hold (not an error).
+    Predicate = 10,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -106,5 +111,6 @@ mod tests {
         assert_eq!(Exit::Transport as u8, 7);
         assert_eq!(Exit::NotFound as u8, 8);
         assert_eq!(Exit::Internal as u8, 9);
+        assert_eq!(Exit::Predicate as u8, 10);
     }
 }

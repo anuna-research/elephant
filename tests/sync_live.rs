@@ -49,6 +49,7 @@ fn ctx(m: &Machine, theory: &str) -> elephant::cli::Ctx {
         json: true,
         theory: Some(theory.to_string()),
         at: None,
+        verbose: 0,
     }
 }
 

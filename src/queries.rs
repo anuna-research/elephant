@@ -62,27 +62,15 @@ pub fn parse_literal(text: &str) -> AppResult<Literal> {
 }
 
 /// Render a literal for display and for pasting back into a query command.
-/// `to_spl` already emits the single `(not …)` wrapper for a negated literal,
-/// so a negated form is returned verbatim — the inner parens are load-bearing
-/// (`not` takes exactly one argument, so `(not flies opus)` would be
-/// rejected). A positive literal has its outer parens stripped for
-/// readability; the flat-form sugar `(given <atom> <args…>)` still accepts the
-/// result, so `elephant explain`/`why-not` round-trip it.
+/// Delegates to the shared [`closure::literal_display`] so the display form is
+/// identical everywhere it matters — including the closure fingerprint (#20).
 fn lit_display(l: &Literal) -> String {
-    let spl = l.to_spl();
-    if l.negation {
-        spl
-    } else {
-        spl.strip_prefix('(')
-            .and_then(|s| s.strip_suffix(')'))
-            .map(str::to_string)
-            .unwrap_or(spl)
-    }
+    closure::literal_display(l)
 }
 
 // ── status (REQ-010) ────────────────────────────────────────────────────
 
-pub fn status(ctx: &Ctx, trust: bool) -> AppResult<()> {
+pub fn status(ctx: &Ctx, trust: bool, fingerprint: bool) -> AppResult<()> {
     let v = view(ctx)?;
     // One row per literal with its effective tag:
     // +D beats +d; any positive beats negatives; -D beats -d.
@@ -110,9 +98,15 @@ pub fn status(ctx: &Ctx, trust: bool) -> AppResult<()> {
     }
     let mut rows: Vec<serde_json::Value> = Vec::new();
     for (literal, tag) in &best {
+        // #26: every row carries the canonical plain-language state next to the
+        // compact tag, so API clients never invent their own gloss.
+        let st = closure::proof_state(*tag);
         let mut row = serde_json::json!({
             "literal": literal,
             "tag": tag.symbol(),
+            "proof_state": st.name,
+            "positive": st.positive,
+            "level": st.level,
         });
         if trust {
             if let Some(w) = v
@@ -127,11 +121,19 @@ pub fn status(ctx: &Ctx, trust: bool) -> AppResult<()> {
         }
         rows.push(row);
     }
+    // #20: the fingerprint is computed from the same best-tag-per-literal
+    // projection these rows carry, so `status --fingerprint` and
+    // `closure fingerprint` agree, and `closure compare` can recompute it from
+    // a saved `status --json` file.
+    let fp = fingerprint.then(|| crate::core::fingerprint::of_closure(&v.closure));
     if ctx.json {
-        println!(
-            "{}",
-            serde_json::json!({"v":1, "theory": v.store.theory_id, "conclusions": rows})
-        );
+        let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id,
+            "proof_state_map": closure::PROOF_STATE_MAP_VERSION,
+            "conclusions": rows});
+        if let Some(fp) = &fp {
+            obj["fingerprint"] = crate::core::fingerprint::to_json(fp, &v.store.theory_id, false);
+        }
+        println!("{obj}");
     } else {
         if rows.is_empty() {
             println!("(empty theory)");
@@ -142,13 +144,122 @@ pub fn status(ctx: &Ctx, trust: bool) -> AppResult<()> {
                 .and_then(|d| d.as_f64())
                 .map(|d| format!("  (degree {d:.2})"))
                 .unwrap_or_default();
+            // #26: `-v` opts text into the canonical name alongside the tag,
+            // without making the default view noisy.
+            let name = if ctx.verbose > 0 {
+                r["proof_state"]
+                    .as_str()
+                    .map(|s| format!("  [{s}]"))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
             println!(
-                "{:>3}  {}{}",
+                "{:>3}  {}{}{}",
                 r["tag"].as_str().unwrap(),
                 r["literal"].as_str().unwrap(),
+                name,
                 deg
             );
         }
+        if let Some(fp) = &fp {
+            println!(
+                "fingerprint {}  ({}, {} conclusions)",
+                fp.qualified(),
+                crate::core::fingerprint::ALGORITHM,
+                fp.included
+            );
+        }
+    }
+    Ok(())
+}
+
+// ── closure fingerprint / compare (#20) ─────────────────────────────────
+
+/// `elephant closure fingerprint` — the canonical semantic closure fingerprint
+/// of the current theory (see `crate::core::fingerprint`).
+pub fn closure_fingerprint(ctx: &Ctx, with_sequence: bool) -> AppResult<()> {
+    let v = view(ctx)?;
+    let fp = crate::core::fingerprint::of_closure(&v.closure);
+    if ctx.json {
+        println!(
+            "{}",
+            crate::core::fingerprint::to_json(&fp, &v.store.theory_id, with_sequence)
+        );
+    } else {
+        println!("{}", fp.qualified());
+        println!(
+            "  algorithm {}  ({} conclusions, excluding {})",
+            crate::core::fingerprint::ALGORITHM,
+            fp.included,
+            crate::core::fingerprint::EXCLUDED.join(", "),
+        );
+        if with_sequence {
+            for line in &fp.sequence {
+                println!("  {line}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `elephant closure compare a.json b.json` — recompute each file's closure
+/// fingerprint and report convergence. Exit 0 on match, `Exit::Predicate` (10)
+/// on a clean mismatch, and the ordinary error codes on a read/parse failure.
+/// It does not need a theory or a daemon: the inputs are self-contained
+/// `status --json` artefacts, so replicas (or a replay) can be compared offline.
+pub fn closure_compare(ctx: &Ctx, a: &std::path::Path, b: &std::path::Path) -> AppResult<()> {
+    let load = |p: &std::path::Path| -> AppResult<crate::core::fingerprint::Fingerprint> {
+        let text = std::fs::read_to_string(p)
+            .map_err(|e| AppError::NotFound(format!("cannot read {}: {e}", p.display())))?;
+        let val: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| AppError::Parse(format!("{} is not JSON: {e}", p.display())))?;
+        crate::core::fingerprint::of_status_json(&val).ok_or_else(|| {
+            AppError::Parse(format!(
+                "{} has no `conclusions` array — is it `status --json` output?",
+                p.display()
+            ))
+        })
+    };
+    let fa = load(a)?;
+    let fb = load(b)?;
+    let matched = fa.digest == fb.digest;
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "v": 1,
+                "algorithm": crate::core::fingerprint::ALGORITHM,
+                "hash": crate::core::fingerprint::HASH,
+                "match": matched,
+                "a": {"file": a.display().to_string(), "digest": fa.digest, "included": fa.included},
+                "b": {"file": b.display().to_string(), "digest": fb.digest, "included": fb.included},
+            })
+        );
+    } else if matched {
+        println!("match  {}  ({} conclusions)", fa.qualified(), fa.included);
+    } else {
+        println!("MISMATCH");
+        println!(
+            "  a {}  ({} conclusions)  {}",
+            fa.qualified(),
+            fa.included,
+            a.display()
+        );
+        println!(
+            "  b {}  ({} conclusions)  {}",
+            fb.qualified(),
+            fb.included,
+            b.display()
+        );
+    }
+    if !matched {
+        // A clean "no": flush stdout, then exit with the predicate code so a
+        // harness can branch on convergence without parsing text. Not an
+        // AppError — nothing failed.
+        use std::io::Write as _;
+        std::io::stdout().flush().ok();
+        std::process::exit(crate::errors::Exit::Predicate as i32);
     }
     Ok(())
 }
@@ -277,8 +388,7 @@ fn ambiguity_opposers(closure: &Closure, rule_label: &str) -> Option<(Literal, V
         .collect();
     let rule_heads: std::collections::HashSet<String> =
         theory.rules().map(|r| r.head_literal().to_spl()).collect();
-    let has_support =
-        |spl: &str| positively_concluded.contains(spl) || rule_heads.contains(spl);
+    let has_support = |spl: &str| positively_concluded.contains(spl) || rule_heads.contains(spl);
 
     let mut opposers: Vec<String> = theory
         .rules()
@@ -430,13 +540,13 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
         && solutions.len() < MAX_SOLUTIONS;
     if ctx.json {
         let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
-            "already_provable": already, "solutions": solutions,
-            "search_status": if exhaustive { "bounded-complete" } else { "budget-exhausted" },
-            "verification": {
-                "raw_examined": r.verification.raw_examined,
-                "accepted": r.verification.accepted,
-                "rejected": r.verification.rejected,
-            }});
+        "already_provable": already, "solutions": solutions,
+        "search_status": if exhaustive { "bounded-complete" } else { "budget-exhausted" },
+        "verification": {
+            "raw_examined": r.verification.raw_examined,
+            "accepted": r.verification.accepted,
+            "rejected": r.verification.rejected,
+        }});
         let docs = docs_join(&vv, open.iter().flat_map(|s| s.facts.iter()));
         if !docs.is_empty() {
             obj["docs"] = docs.into();
@@ -536,10 +646,14 @@ pub fn what_if(ctx: &Ctx, facts_then_goal: &[String]) -> AppResult<()> {
             serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": goal_text,
                 "provable": r.is_provable(),
                 "newly_provable": r.newly_provable().iter().map(lit_display).collect::<Vec<_>>(),
+                "proof_state_map": closure::PROOF_STATE_MAP_VERSION,
                 "changed": r.changed_conclusions.iter()
                     .map(|(l, from, to)| serde_json::json!({
                         "literal": lit_display(l),
-                        "from": from.symbol(), "to": to.symbol()}))
+                        "from": from.symbol(), "to": to.symbol(),
+                        // #26: shared canonical reading of the before/after tags.
+                        "from_state": closure::proof_state(*from).name,
+                        "to_state": closure::proof_state(*to).name}))
                     .collect::<Vec<_>>()})
         );
     } else {
@@ -739,7 +853,7 @@ pub fn show(ctx: &Ctx, sentence_id: &str) -> AppResult<()> {
 
 // ── log / journal (REQ-016) ─────────────────────────────────────────────
 
-pub fn log(ctx: &Ctx) -> AppResult<()> {
+pub fn log(ctx: &Ctx, filter: &crate::cli::LogFilter) -> AppResult<()> {
     let v = view(ctx)?;
     // SPEC-005 REQ-407: annotate Entries that overwrite another signer's
     // winning documentation value (family, key, previous writer).
@@ -818,6 +932,11 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
             "cbcl": e.cbcl,
         }));
     }
+    // #22: apply the AND-composed filters. Each present filter narrows; absent
+    // filters are unconstrained. Retaining after the full journal is built keeps
+    // the ids, status, and retraction targets exactly as `log` reports them, so
+    // a filtered view is a strict subset of the unfiltered one.
+    apply_log_filter(&mut items, filter);
     if ctx.json {
         println!(
             "{}",
@@ -867,6 +986,141 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
     Ok(())
 }
 
+/// Retain only the journal rows matching every present filter (#22).
+fn apply_log_filter(items: &mut Vec<serde_json::Value>, f: &crate::cli::LogFilter) {
+    items.retain(|i| {
+        // `--status quarantined` matches the `quarantined: <reason>` prefix;
+        // every other status is an exact match.
+        if let Some(want) = &f.status {
+            let got = i["status"].as_str().unwrap_or("");
+            let ok = if want == "quarantined" {
+                got.starts_with("quarantined")
+            } else {
+                got == want
+            };
+            if !ok {
+                return false;
+            }
+        }
+        if let Some(want) = &f.performative
+            && i["performative"].as_str() != Some(want.as_str())
+        {
+            return false;
+        }
+        if let Some(want) = &f.signer
+            && i["signer"].as_str() != Some(want.as_str())
+        {
+            return false;
+        }
+        // `--sid` matches either the act's own sentence-id or the stable
+        // entry-id `log` advertises for retracts/concedes.
+        if let Some(want) = &f.sid
+            && i["sid"].as_str() != Some(want.as_str())
+            && i["entry_id"].as_str() != Some(want.as_str())
+        {
+            return false;
+        }
+        if let Some(want) = &f.retracts
+            && i["retracts"].as_str() != Some(want.as_str())
+        {
+            return false;
+        }
+        true
+    });
+}
+
+// ── theory inspect: journal accounting (#22) ────────────────────────────
+
+/// Whether an active assert is *setup* (theory meta or a membership fact)
+/// rather than *content*. The rule is explicit, not a guess: `(meta …)` and
+/// `(given (member …))` are setup; everything else is content.
+fn is_setup_assert(spl: &str) -> bool {
+    let t = spl.trim_start();
+    t.starts_with("(meta ") || t.starts_with("(meta(") || {
+        let inner = t.trim_start_matches("(given").trim_start();
+        inner.starts_with("(member ") || inner.starts_with("(member(")
+    }
+}
+
+/// `elephant theory inspect <theory>` — active/retracted/retraction accounting
+/// (#22). Derived from the same closure `log` reports, so the two never
+/// disagree, and deterministic after merge/restart.
+pub fn theory_inspect(ctx: &Ctx, theory: &str) -> AppResult<()> {
+    use crate::core::envelope::SpeechAct;
+    let sub = Ctx {
+        paths: ctx.paths.clone(),
+        json: ctx.json,
+        theory: Some(theory.to_string()),
+        at: ctx.at.clone(),
+        verbose: ctx.verbose,
+    };
+    let v = view(&sub)?;
+    let (mut active_assertions, mut retracted_assertions, mut shadowed_assertions) = (0u64, 0, 0);
+    let (mut retractions, mut setup_assertions) = (0u64, 0);
+    let mut other_active = 0u64; // active non-assert acts (commit/request/concede)
+    for a in &v.closure.admitted {
+        match &a.act {
+            SpeechAct::Assert { spl, .. } => {
+                if a.retracted {
+                    retracted_assertions += 1;
+                } else if a.label_shadowed {
+                    shadowed_assertions += 1;
+                } else {
+                    active_assertions += 1;
+                    if is_setup_assert(spl) {
+                        setup_assertions += 1;
+                    }
+                }
+            }
+            SpeechAct::Retract { .. } => retractions += 1,
+            _ => {
+                if !a.retracted {
+                    other_active += 1;
+                }
+            }
+        }
+    }
+    let quarantined = v.closure.quarantined.len() as u64;
+    let journal_entries = v.closure.admitted.len() as u64 + quarantined;
+    let content_assertions = active_assertions - setup_assertions;
+
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "v": 1,
+                "theory": v.store.theory_id,
+                "journal_entries": journal_entries,
+                "active_assertions": active_assertions,
+                "setup_assertions": setup_assertions,
+                "content_assertions": content_assertions,
+                "retracted_assertions": retracted_assertions,
+                "retractions": retractions,
+                "shadowed_assertions": shadowed_assertions,
+                "other_active": other_active,
+                "quarantined": quarantined,
+            })
+        );
+    } else {
+        println!("journal entries       {journal_entries:>4}");
+        println!("active assertions     {active_assertions:>4}");
+        println!("  setup (meta/member) {setup_assertions:>4}");
+        println!("  content             {content_assertions:>4}");
+        println!("retracted assertions  {retracted_assertions:>4}");
+        println!("retractions           {retractions:>4}");
+        if shadowed_assertions > 0 {
+            println!("shadowed assertions   {shadowed_assertions:>4}");
+        }
+        if other_active > 0 {
+            println!("other active acts     {other_active:>4}");
+        }
+        if quarantined > 0 {
+            println!("quarantined           {quarantined:>4}");
+        }
+    }
+    Ok(())
+}
+
 // ── describe / trace (SPEC-003 REQ-208) ─────────────────────────────────
 
 /// A meta property value as plain JSON — a string stays a string, a list
@@ -877,9 +1131,13 @@ fn meta_value_json(val: &spindle_core::theory::MetaValue) -> serde_json::Value {
     use spindle_core::theory::MetaValue;
     match val {
         MetaValue::String(s) => serde_json::Value::String(s.clone()),
-        MetaValue::List(items) => {
-            serde_json::Value::Array(items.iter().cloned().map(serde_json::Value::String).collect())
-        }
+        MetaValue::List(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
     }
 }
 
@@ -984,16 +1242,21 @@ pub fn trace(ctx: &Ctx) -> AppResult<()> {
             .conclusions
             .iter()
             .map(|c| {
+                let st = closure::proof_state(c.conclusion_type);
                 serde_json::json!({
                     "literal": lit_display(&c.literal),
                     "tag": c.conclusion_type.symbol(),
+                    "proof_state": st.name,
+                    "positive": st.positive,
+                    "level": st.level,
                     "rule": c.rule_label,
                 })
             })
             .collect();
         println!(
             "{}",
-            serde_json::json!({"v":1, "theory": v.store.theory_id, "trace": rows})
+            serde_json::json!({"v":1, "theory": v.store.theory_id,
+                "proof_state_map": closure::PROOF_STATE_MAP_VERSION, "trace": rows})
         );
     } else {
         for c in &v.closure.conclusions {

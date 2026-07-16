@@ -35,6 +35,7 @@ fn removed_member_locked_out_after_rotation() {
         json: true,
         theory: Some(theory_id.clone()),
         at: None,
+        verbose: 0,
     };
     elephant::cli::append_asserts(&ctx, &["(given before-removal)".to_string()]).unwrap();
 
@@ -56,6 +57,7 @@ fn removed_member_locked_out_after_rotation() {
         json: true,
         theory: Some(theory_id.clone()),
         at: None,
+        verbose: 0,
     };
     elephant::cli::append_asserts(&ctx2, &["(given after-removal)".to_string()]).unwrap();
 
