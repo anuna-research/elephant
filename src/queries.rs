@@ -356,12 +356,43 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
 
 // ── what-if (REQ-014) ───────────────────────────────────────────────────
 
+/// A what-if hypothetical must be a *fact*. what-if adds each hypothetical to
+/// the theory as a fact and re-reasons — spindle's `HypotheticalClaim` is
+/// fact-only — so a `(prefer …)` or a rule handed to it is coerced into an
+/// inert atom by the `(given …)` sugar and never installed as a superiority or
+/// rule. That silently produced a wrong answer for the single most useful
+/// hypothetical (an *adjudication*), so reject it with a clear error instead
+/// (#11). Detection reuses the SPL recogniser: a plain fact literal is not a
+/// standalone statement (it must be wrapped `(given …)`), so a raw string that
+/// parses to a superiority or a non-fact rule is structure what-if cannot take.
+fn structural_hypothetical(raw: &str) -> Option<&'static str> {
+    let t = spindle_parser::parse_spl(raw.trim()).ok()?;
+    if !t.superiorities().is_empty() {
+        return Some("a preference (prefer …)");
+    }
+    if t.rules().any(|r| !r.is_fact()) {
+        return Some("a rule");
+    }
+    None
+}
+
 pub fn what_if(ctx: &Ctx, facts_then_goal: &[String]) -> AppResult<()> {
     let (goal_text, facts) = facts_then_goal
         .split_last()
         .ok_or_else(|| AppError::Usage("what-if needs <facts…> <goal>".into()))?;
     let v = view(ctx)?;
     let goal = parse_literal(goal_text)?;
+    for f in facts {
+        if let Some(kind) = structural_hypothetical(f) {
+            return Err(AppError::Usage(format!(
+                "what-if hypotheticals must be facts, but '{f}' is {kind}, which \
+                 what-if cannot install — it adds each hypothetical as a fact and \
+                 re-reasons. To test an adjudication non-destructively is not yet \
+                 supported here; assert it and then retract it: \
+                 `elephant assert '{f}'` followed by `elephant retract <sentence-id>`."
+            )));
+        }
+    }
     let hyps: Vec<spindle_core::query::HypotheticalClaim> = facts
         .iter()
         .map(|f| {

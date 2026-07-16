@@ -242,6 +242,35 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #11: what-if rejects a `(prefer …)`/rule hypothetical with a clear error
+/// instead of silently coercing it into an inert fact and reporting no change.
+#[test]
+fn what_if_rejects_structural_hypothetical() {
+    let e = Env::new();
+    // Symmetric mutual attack, no preference: `lab` and `zoo` both block.
+    e.ok(&["assert", "(normally r-lab lab-seed (not zoo))", "-t", "release"]);
+    e.ok(&["assert", "(normally r-zoo zoo-seed (not lab))", "-t", "release"]);
+    e.ok(&["assert", "lab-seed", "-t", "release"]);
+    e.ok(&["assert", "zoo-seed", "-t", "release"]);
+
+    // A prefer hypothetical is refused, not silently ignored.
+    let out = e
+        .cmd()
+        .args(["what-if", "(prefer r-lab r-zoo)", "lab", "-t", "release"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "structural hypothetical must be refused");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("must be facts") && err.contains("prefer"),
+        "error must explain prefer is not a fact hypothetical: {err}"
+    );
+
+    // A plain fact hypothetical (even a typed/parenthesised one) still works.
+    let wi = e.json(&["what-if", "(engineered lab)", "lab-seed", "-t", "release"]);
+    assert_eq!(wi["provable"], true, "fact hypothetical still evaluated: {wi}");
+}
+
 /// #14: retract entries are individually addressable — a stable `entry_id`
 /// and a first-class `retracts` target — so an order-independent journal
 /// fingerprint no longer collapses every retract onto a null `sid`.
