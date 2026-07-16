@@ -242,6 +242,305 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #17: executable documentation fixture for defeater polarity. A
+/// correct-polarity defeater `(except d p (not q))` blocks q (+d → not
+/// provable) without deriving `(not q)`; the wrong-polarity `(except d p q)`
+/// leaves q untouched. Mirrors docs/concepts/Defeasible Logic.md.
+#[test]
+fn defeater_polarity_docs_fixture() {
+    // Correct polarity: the defeater's head is the complement (not q).
+    let e = Env::new();
+    e.ok(&["assert", "(given p)", "-t", "release"]);
+    e.ok(&["assert", "(normally r p q)", "-t", "release"]);
+    assert_eq!(
+        tag_of(&e.json(&["status", "-t", "release"]), "q").as_deref(),
+        Some("+d"),
+        "q is derived before the defeater"
+    );
+
+    e.ok(&["assert", "(except d p (not q))", "-t", "release"]);
+    let after = e.json(&["status", "-t", "release"]);
+    assert_ne!(
+        tag_of(&after, "q").as_deref(),
+        Some("+d"),
+        "correct-polarity defeater must block q: {after}"
+    );
+    // The defeater attacks but never establishes its head.
+    assert!(
+        !matches!(tag_of(&after, "(not (q))").as_deref(), Some("+d") | Some("+D")),
+        "defeater must not derive (not q): {after}"
+    );
+
+    // Wrong polarity (positive head) is inert for blocking q — the contrast.
+    let e2 = Env::new();
+    e2.ok(&["assert", "(given p)", "-t", "release"]);
+    e2.ok(&["assert", "(normally r p q)", "-t", "release"]);
+    e2.ok(&["assert", "(except d p q)", "-t", "release"]);
+    assert_eq!(
+        tag_of(&e2.json(&["status", "-t", "release"]), "q").as_deref(),
+        Some("+d"),
+        "a positive-head defeater does not block q"
+    );
+}
+
+/// #16: require returns only *verified* fact sets — every solution actually
+/// makes the goal provable under what-if semantics — never a raw
+/// body-satisfaction candidate that a defeater still blocks.
+#[test]
+fn require_returns_only_verified_solutions() {
+    let e = Env::new();
+    // r would derive q from p, but defeater d attacks q whenever p holds.
+    // Adding {p} therefore does NOT make q provable.
+    e.ok(&["assert", "(normally r p q)", "-t", "release"]);
+    e.ok(&["assert", "(except d p (not q))", "-t", "release"]);
+    // A separate clean goal with a genuine missing premise.
+    e.ok(&["assert", "(normally r2 s2 g2)", "-t", "release"]);
+
+    let rq = e.json(&["require", "q", "-t", "release"]);
+    let sols = rq["solutions"].as_array().unwrap();
+    assert!(
+        !sols
+            .iter()
+            .any(|s| s.as_array().unwrap().iter().any(|f| f == "p")),
+        "require must not offer {{p}}: adding p fires the defeater and q stays blocked: {rq}"
+    );
+    assert!(
+        rq["search_status"].as_str().is_some(),
+        "search_status must be serialized: {rq}"
+    );
+    assert!(rq.get("verification").is_some(), "verification counters present: {rq}");
+
+    // Invariant: inject every returned solution (for the clean goal) through
+    // what-if — each must report the goal provable.
+    let rg = e.json(&["require", "g2", "-t", "release"]);
+    let g2_sols = rg["solutions"].as_array().unwrap();
+    assert!(
+        g2_sols.iter().any(|s| s.as_array().unwrap().iter().any(|f| f == "s2")),
+        "require must still propose the genuine missing premise s2: {rg}"
+    );
+    for s in g2_sols {
+        let facts: Vec<String> = s
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap().to_string())
+            .collect();
+        let mut args: Vec<&str> = vec!["what-if"];
+        args.extend(facts.iter().map(String::as_str));
+        args.extend(["g2", "-t", "release"]);
+        let wi = e.json(&args);
+        assert_eq!(
+            wi["provable"], true,
+            "every require solution must make the goal provable: facts={facts:?} → {wi}"
+        );
+    }
+}
+
+/// #12: an un-adjudicated mutual conflict is reported as a first-class
+/// `ambiguity` block naming the opposing rule, not an `undetermined`
+/// diagnostics-gap fallthrough.
+#[test]
+fn why_not_reports_ambiguity_blocking() {
+    let e = Env::new();
+    // Two-level mutual block: lab-origin and zoonotic-origin each attack the
+    // other, both supported, no preference — both settle at -D.
+    e.ok(&["assert", "ev-lab", "-t", "release"]);
+    e.ok(&["assert", "ev-zoo", "-t", "release"]);
+    e.ok(&["assert", "(normally r-lab ev-lab lab-origin)", "-t", "release"]);
+    e.ok(&["assert", "(normally r-zoo ev-zoo zoonotic-origin)", "-t", "release"]);
+    e.ok(&["assert", "(normally r-lab-not-zoo lab-origin (not zoonotic-origin))", "-t", "release"]);
+    e.ok(&["assert", "(normally r-zoo-not-lab zoonotic-origin (not lab-origin))", "-t", "release"]);
+
+    let w = e.json(&["why-not", "lab-origin", "-t", "release"]);
+    let b = w["blocked_by"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["type"] == "ambiguity")
+        .unwrap_or_else(|| panic!("expected an ambiguity blocker, got: {w}"));
+    assert_eq!(b["type"], "ambiguity");
+    assert!(
+        b["opposing_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "r-zoo-not-lab"),
+        "ambiguity must name the opposing rule: {b}"
+    );
+    assert!(
+        b["opposing_literal"].as_str().unwrap().contains("lab-origin"),
+        "ambiguity must name the opposing literal: {b}"
+    );
+    assert!(b["explanation"].as_str().unwrap().contains("prefer"), "explanation hints at adjudication");
+}
+
+/// #9: `show <sentence-id>` inspects one entry without dumping the journal;
+/// a miss reuses the same "no entry with sentence-id …" error.
+#[test]
+fn show_inspects_single_entry_by_id() {
+    let e = Env::new();
+    let a = e.json(&["assert", "qa-signed", "-t", "release"]);
+    let sid = a["receipt"].as_str().unwrap().to_string();
+
+    let s = e.json(&["show", &sid, "-t", "release"]);
+    assert_eq!(s["sentence_id"].as_str(), Some(sid.as_str()));
+    assert_eq!(s["performative"], "assert");
+    assert_eq!(s["status"], "active");
+    assert!(s["spl_form"].as_str().unwrap().contains("qa-signed"));
+    assert!(!s["signer"].as_str().unwrap().is_empty());
+    assert!(!s["entry"].is_null(), "raw entry object present in --json");
+
+    // After retraction the same id shows status retracted.
+    e.ok(&["retract", &sid, "-t", "release"]);
+    let s2 = e.json(&["show", &sid, "-t", "release"]);
+    assert_eq!(s2["status"], "retracted");
+
+    // A miss is a clean not-found, not a crash.
+    let out = e
+        .cmd()
+        .args(["show", "s-doesnotexist0000", "-t", "release"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no entry with sentence-id"),
+        "miss must reuse the standard not-found error"
+    );
+}
+
+/// #11: what-if rejects a `(prefer …)`/rule hypothetical with a clear error
+/// instead of silently coercing it into an inert fact and reporting no change.
+#[test]
+fn what_if_rejects_structural_hypothetical() {
+    let e = Env::new();
+    // Symmetric mutual attack, no preference: `lab` and `zoo` both block.
+    e.ok(&["assert", "(normally r-lab lab-seed (not zoo))", "-t", "release"]);
+    e.ok(&["assert", "(normally r-zoo zoo-seed (not lab))", "-t", "release"]);
+    e.ok(&["assert", "lab-seed", "-t", "release"]);
+    e.ok(&["assert", "zoo-seed", "-t", "release"]);
+
+    // A prefer hypothetical is refused, not silently ignored.
+    let out = e
+        .cmd()
+        .args(["what-if", "(prefer r-lab r-zoo)", "lab", "-t", "release"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "structural hypothetical must be refused");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("must be facts") && err.contains("prefer"),
+        "error must explain prefer is not a fact hypothetical: {err}"
+    );
+
+    // A plain fact hypothetical (even a typed/parenthesised one) still works.
+    let wi = e.json(&["what-if", "(engineered lab)", "lab-seed", "-t", "release"]);
+    assert_eq!(wi["provable"], true, "fact hypothetical still evaluated: {wi}");
+}
+
+/// #14: retract entries are individually addressable — a stable `entry_id`
+/// and a first-class `retracts` target — so an order-independent journal
+/// fingerprint no longer collapses every retract onto a null `sid`.
+#[test]
+fn log_retracts_are_addressable() {
+    let e = Env::new();
+    let a1 = e.json(&["assert", "one", "-t", "release"]);
+    let sid1 = a1["receipt"].as_str().unwrap().to_string();
+    let a2 = e.json(&["assert", "two", "-t", "release"]);
+    let sid2 = a2["receipt"].as_str().unwrap().to_string();
+    e.ok(&["retract", &sid1, "-t", "release"]);
+    e.ok(&["retract", &sid2, "-t", "release"]);
+
+    let log = e.json(&["log", "-t", "release"]);
+    let entries = log["entries"].as_array().unwrap();
+
+    // Every entry carries a stable, non-null entry_id, and they are distinct
+    // even across the two retracts (which both have a null `sid`).
+    let ids: Vec<&str> = entries
+        .iter()
+        .map(|x| {
+            let id = x["entry_id"].as_str().expect("every entry has an entry_id");
+            assert!(!id.is_empty());
+            id
+        })
+        .collect();
+    let mut uniq = ids.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    assert_eq!(uniq.len(), ids.len(), "entry_ids must be distinct: {ids:?}");
+
+    // Each retract names its target sid as a first-class field, with sid null.
+    let retracts: Vec<(&str, Option<&str>)> = entries
+        .iter()
+        .filter(|x| x["performative"] == "retract")
+        .map(|x| (x["retracts"].as_str().unwrap(), x["sid"].as_str()))
+        .collect();
+    assert_eq!(retracts.len(), 2);
+    assert!(retracts.iter().all(|(_, sid)| sid.is_none()), "retract sid stays null");
+    let targets: Vec<&str> = retracts.iter().map(|(t, _)| *t).collect();
+    assert!(targets.contains(&sid1.as_str()), "retracts sid1: {targets:?}");
+    assert!(targets.contains(&sid2.as_str()), "retracts sid2: {targets:?}");
+
+    // For an assert, entry_id equals its own sentence-id (same derivation).
+    let assert1 = entries
+        .iter()
+        .find(|x| x["sid"].as_str() == Some(sid1.as_str()))
+        .unwrap();
+    assert_eq!(assert1["entry_id"].as_str(), Some(sid1.as_str()));
+
+    // The entry_id `log` advertises for a retract is inspectable via `show`
+    // (retracts carry no sid, so this is the only way to address them).
+    let retract_id = entries
+        .iter()
+        .find(|x| x["performative"] == "retract")
+        .and_then(|x| x["entry_id"].as_str())
+        .unwrap()
+        .to_string();
+    let shown = e.json(&["show", &retract_id, "-t", "release"]);
+    assert_eq!(shown["performative"], "retract");
+    assert!(shown["retracts"].as_str().is_some(), "show resolves a retract by entry_id: {shown}");
+}
+
+/// #13: explain on a blocked literal is a self-describing stub, not a bare
+/// `null` that reads like a serialization failure.
+#[test]
+fn explain_blocked_literal_hints_at_why_not() {
+    let e = Env::new();
+    // A rule with an unmet premise: `blocked` is -D, so explain has nothing
+    // to derive.
+    e.ok(&["assert", "(normally r-b missing-fact blocked)", "-t", "release"]);
+    let ex = e.json(&["explain", "blocked", "-t", "release"]);
+    assert!(ex["explanation"].is_null(), "no derivation for a blocked literal");
+    assert_eq!(ex["not_provable"], true, "must flag why the explanation is null: {ex}");
+    assert!(
+        ex["hint"].as_str().unwrap_or_default().contains("why-not"),
+        "must point at why-not: {ex}"
+    );
+}
+
+/// #10: describe --json meta values are plain JSON strings, not Rust Debug
+/// (`String("…")`) wrappers. The --json contract is a stable data interface.
+#[test]
+fn describe_json_meta_values_are_plain_strings() {
+    let e = Env::new();
+    e.ok(&[
+        "assert",
+        "(meta deploy-thing (description \"ship it\"))",
+        "-t",
+        "release",
+    ]);
+    let d = e.json(&["describe", "deploy-thing", "-t", "release"]);
+    let meta = &d["labels"][0]["meta"];
+    assert_eq!(
+        meta["description"], "ship it",
+        "meta value must be a plain JSON string, not a Debug-wrapped String(\"…\"): {meta}"
+    );
+    // Guard the exact regression: no Rust Debug syntax may survive into JSON.
+    assert!(
+        !d.to_string().contains("String("),
+        "no Debug String(…) wrapper may leak into describe --json: {d}"
+    );
+}
+
 // ── SPEC-005 TEST-405: docs join in why-not / require ───────────────────
 
 /// Documented and built-in families join why-not/require output; the docs

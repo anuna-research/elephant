@@ -119,6 +119,53 @@ fn note_synced(refresh: &Option<RefreshTx>, theory: &str, applied: usize) {
 /// applied peer entries (see `daemon::api::serve`).
 pub type RefreshTx = tokio::sync::mpsc::UnboundedSender<String>;
 
+// ── per-peer sync health (SPEC-002; #15) ────────────────────────────────
+
+/// Health of the sync link to one peer for one theory. `daemon status`
+/// exposes it so a node can locally tell it has diverged from a peer — the
+/// session-scoped counters (`entries_merged`, resets per daemon run) cannot.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct PeerHealth {
+    /// RFC 3339 timestamp of the last session that completed without error.
+    pub last_sync_ok: Option<String>,
+    /// Deltas applied on that last successful session.
+    pub last_applied: u64,
+    /// The last error message, and when it happened, if the most recent
+    /// attempt (or a more recent one than the last success) failed.
+    pub last_error: Option<String>,
+    pub last_error_at: Option<String>,
+}
+
+/// Shared per-(theory, peer) health, updated by the sync loops and read by the
+/// `daemon status` handler. `None` in the standalone sync test harness.
+pub type SyncHealth = std::collections::BTreeMap<(String, String), PeerHealth>;
+pub type HealthHandle = Arc<std::sync::Mutex<SyncHealth>>;
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+fn record_ok(health: &Option<HealthHandle>, theory: &str, peer: &str, applied: usize) {
+    if let Some(h) = health {
+        let mut m = h.lock().unwrap();
+        let e = m.entry((theory.to_string(), peer.to_string())).or_default();
+        e.last_sync_ok = Some(now_rfc3339());
+        e.last_applied = applied as u64;
+        // A clean session clears the standing error.
+        e.last_error = None;
+        e.last_error_at = None;
+    }
+}
+
+fn record_err(health: &Option<HealthHandle>, theory: &str, peer: &str, msg: &str) {
+    if let Some(h) = health {
+        let mut m = h.lock().unwrap();
+        let e = m.entry((theory.to_string(), peer.to_string())).or_default();
+        e.last_error = Some(msg.to_string());
+        e.last_error_at = Some(now_rfc3339());
+    }
+}
+
 // ── iroh glue ───────────────────────────────────────────────────────────
 
 /// Serve one accepted sync connection: the roster gate keys off the QUIC
@@ -128,6 +175,7 @@ async fn handle_connection(
     conn: iroh::endpoint::Connection,
     paths: &Paths,
     refresh: &Option<RefreshTx>,
+    health: &Option<HealthHandle>,
 ) -> AppResult<()> {
     let peer = conn.remote_id().to_string();
     let (send, recv) = conn
@@ -136,18 +184,101 @@ async fn handle_connection(
         .map_err(|e| AppError::Transport(format!("accept sync stream: {e}")))?;
     let mut stream = tokio::io::join(recv, send);
     let (theory, applied) = sync_as_responder(&mut stream, &peer, paths).await?;
+    // A completed accept is a successful sync with this peer, too.
+    record_ok(health, &theory, &peer, applied);
     note_synced(refresh, &theory, applied);
     Ok(())
 }
 
-/// One dial pass: for each local theory, dial every roster peer (except us)
-/// and run a session. Best-effort — a peer that is offline or unreachable is
-/// logged and skipped, never fatal.
+/// Max concurrent dials in one pass (#18): a large roster must not open an
+/// unbounded number of sockets or spawn unbounded tasks.
+const MAX_CONCURRENT_DIALS: usize = 8;
+
+/// Per-peer dial budget (#18): one unreachable peer waits at most this long,
+/// so it cannot add its full transport timeout to every other peer's cadence.
+const PER_PEER_DIAL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The dial → open → session chain for one peer, collapsed to a single
+/// per-peer outcome (deltas applied, or an error).
+async fn dial_peer(
+    endpoint: &iroh::Endpoint,
+    paths: &Paths,
+    theory: &str,
+    peer_id: iroh::EndpointId,
+) -> AppResult<usize> {
+    let conn = transport::dial_sync(endpoint, peer_id)
+        .await
+        .map_err(|e| AppError::Transport(format!("dial peer: {e}")))?;
+    let (send, recv) = conn
+        .open_bi()
+        .await
+        .map_err(|e| AppError::Transport(format!("open sync stream: {e}")))?;
+    let mut stream = tokio::io::join(recv, send);
+    sync_as_initiator(&mut stream, theory, paths).await
+}
+
+/// Concurrent, bounded dial scheduler (#18). Each `(theory, peer)` in `targets`
+/// is dialled by `dial` on its own task with an independent
+/// [`PER_PEER_DIAL_TIMEOUT`]; at most `concurrency` run at once. `on_result` is
+/// invoked once per target, on this task, as each completes — so an offline
+/// peer in one theory never delays the first attempt for a reachable peer in
+/// another. The `JoinSet` aborts every in-flight dial if this future is dropped
+/// (daemon shutdown cancels the whole sync task).
+///
+/// Generic over the dial operation so the scheduler is exercised deterministically
+/// in tests (one never-completing dial next to an immediately-ready one) without
+/// an iroh endpoint.
+async fn dial_targets<K, F, Fut>(
+    targets: Vec<(String, String, K)>,
+    concurrency: usize,
+    per_dial_timeout: Duration,
+    dial: F,
+    mut on_result: impl FnMut(String, String, Result<usize, String>),
+) where
+    K: Send + 'static,
+    F: Fn(String, String, K) -> Fut + Clone + Send + Sync + 'static,
+    Fut: std::future::Future<Output = AppResult<usize>> + Send + 'static,
+{
+    let limit = concurrency.max(1);
+    let mut set: tokio::task::JoinSet<(String, String, Result<usize, String>)> =
+        tokio::task::JoinSet::new();
+    for (theory, pk, key) in targets {
+        // Cap *live tasks*, not just sockets: reap a finished dial before
+        // spawning past the limit, so a large roster cannot create an
+        // unbounded number of tasks or sockets (#18). A completed task reaps
+        // instantly; if all `limit` are still running, this waits for one.
+        while set.len() >= limit {
+            if let Some(Ok((theory, pk, outcome))) = set.join_next().await {
+                on_result(theory, pk, outcome);
+            }
+        }
+        let dial = dial.clone();
+        set.spawn(async move {
+            let outcome =
+                tokio::time::timeout(per_dial_timeout, dial(theory.clone(), pk.clone(), key))
+                    .await
+                    .map_err(|_| "dial timed out".to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()));
+            (theory, pk, outcome)
+        });
+    }
+    while let Some(joined) = set.join_next().await {
+        if let Ok((theory, pk, outcome)) = joined {
+            on_result(theory, pk, outcome);
+        }
+    }
+}
+
+/// One dial pass: snapshot every `(theory, roster-peer)` (except us) and dial
+/// them concurrently with bounded fan-out. Best-effort — an offline or
+/// unreachable peer times out and is recorded, never fatal, and never blocks
+/// other peers (#18).
 async fn dial_once(
     endpoint: &iroh::Endpoint,
     paths: &Paths,
     ident: &Identity,
     refresh: &Option<RefreshTx>,
+    health: &Option<HealthHandle>,
 ) {
     let me = transport::node_pk(ident);
     let theories = match crate::store::list_theories(paths) {
@@ -157,33 +288,46 @@ async fn dial_once(
             return;
         }
     };
+    // Snapshot of due targets: (theory, peer_pk, resolved node id). A malformed
+    // roster pk is skipped here (never a health error).
+    let mut targets: Vec<(String, String, iroh::EndpointId)> = Vec::new();
     for (meta, _) in theories {
         let theory = meta.theory_id;
-        let roster = roster_node_pks(paths, &theory).unwrap_or_default();
-        for pk in roster {
+        for pk in roster_node_pks(paths, &theory).unwrap_or_default() {
             if pk == me {
                 continue;
             }
             let Ok(peer_id) = transport::parse_node_pk(&pk) else {
                 continue;
             };
-            match transport::dial_sync(endpoint, peer_id).await {
-                Ok(conn) => match conn.open_bi().await {
-                    Ok((send, recv)) => {
-                        let mut stream = tokio::io::join(recv, send);
-                        match sync_as_initiator(&mut stream, &theory, paths).await {
-                            Ok(applied) => note_synced(refresh, &theory, applied),
-                            Err(e) => {
-                                tracing::debug!(%theory, %pk, "sync session failed: {e}")
-                            }
-                        }
-                    }
-                    Err(e) => tracing::debug!(%theory, %pk, "open sync stream: {e}"),
-                },
-                Err(e) => tracing::debug!(%theory, %pk, "dial peer: {e}"),
-            }
+            targets.push((theory.clone(), pk, peer_id));
         }
     }
+
+    let endpoint = endpoint.clone();
+    let paths = paths.clone();
+    let dial = move |theory: String, _pk: String, peer_id: iroh::EndpointId| {
+        let endpoint = endpoint.clone();
+        let paths = paths.clone();
+        async move { dial_peer(&endpoint, &paths, &theory, peer_id).await }
+    };
+    dial_targets(
+        targets,
+        MAX_CONCURRENT_DIALS,
+        PER_PEER_DIAL_TIMEOUT,
+        dial,
+        |theory, pk, outcome| match outcome {
+            Ok(applied) => {
+                record_ok(health, &theory, &pk, applied);
+                note_synced(refresh, &theory, applied);
+            }
+            Err(e) => {
+                tracing::debug!(%theory, %pk, "sync failed: {e}");
+                record_err(health, &theory, &pk, &e);
+            }
+        },
+    )
+    .await;
 }
 
 /// Run continuous sync until `shutdown` fires: bind the durable sync endpoint,
@@ -194,9 +338,10 @@ pub async fn run(
     shutdown: Arc<tokio::sync::Notify>,
     interval: Duration,
     refresh: Option<RefreshTx>,
+    health: Option<HealthHandle>,
 ) -> AppResult<()> {
     let endpoint = transport::sync_endpoint(&ident).await?;
-    run_with_endpoint(endpoint, paths, ident, shutdown, interval, refresh).await
+    run_with_endpoint(endpoint, paths, ident, shutdown, interval, refresh, health).await
 }
 
 /// The accept + dial loops over an already-bound endpoint. Split from [`run`]
@@ -210,6 +355,7 @@ pub async fn run_with_endpoint(
     shutdown: Arc<tokio::sync::Notify>,
     interval: Duration,
     refresh: Option<RefreshTx>,
+    health: Option<HealthHandle>,
 ) -> AppResult<()> {
     tracing::info!(id = %endpoint.id(), "sync endpoint listening");
 
@@ -219,6 +365,7 @@ pub async fn run_with_endpoint(
         let paths = paths.clone();
         let shutdown = shutdown.clone();
         let refresh = refresh.clone();
+        let health = health.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -227,10 +374,11 @@ pub async fn run_with_endpoint(
                         let Some(incoming) = incoming else { break };
                         let paths = paths.clone();
                         let refresh = refresh.clone();
+                        let health = health.clone();
                         tokio::spawn(async move {
                             match incoming.await {
                                 Ok(conn) => {
-                                    if let Err(e) = handle_connection(conn, &paths, &refresh).await {
+                                    if let Err(e) = handle_connection(conn, &paths, &refresh, &health).await {
                                         tracing::debug!("incoming sync failed: {e}");
                                     }
                                 }
@@ -247,7 +395,7 @@ pub async fn run_with_endpoint(
     loop {
         tokio::select! {
             _ = shutdown.notified() => break,
-            _ = tokio::time::sleep(interval) => dial_once(&endpoint, &paths, &ident, &refresh).await,
+            _ = tokio::time::sleep(interval) => dial_once(&endpoint, &paths, &ident, &refresh, &health).await,
         }
     }
     accept.abort();
@@ -332,6 +480,80 @@ mod tests {
         s_store.append(&entry).unwrap();
         drop(clock);
         theory_id
+    }
+
+    /// #15: record_ok/record_err maintain per-(theory, peer) health — a
+    /// success stamps last_sync_ok and clears any standing error; an error
+    /// stamps last_error while retaining the prior last_sync_ok.
+    #[test]
+    fn sync_health_records_ok_and_error() {
+        let h: HealthHandle = Arc::new(std::sync::Mutex::new(SyncHealth::default()));
+        let hopt = Some(h.clone());
+        let key = ("t1".to_string(), "peerA".to_string());
+
+        record_ok(&hopt, "t1", "peerA", 5);
+        {
+            let m = h.lock().unwrap();
+            let e = &m[&key];
+            assert_eq!(e.last_applied, 5);
+            assert!(e.last_sync_ok.is_some());
+            assert!(e.last_error.is_none());
+        }
+
+        record_err(&hopt, "t1", "peerA", "connection lost");
+        {
+            let m = h.lock().unwrap();
+            let e = &m[&key];
+            assert_eq!(e.last_error.as_deref(), Some("connection lost"));
+            assert!(e.last_error_at.is_some());
+            assert!(e.last_sync_ok.is_some(), "prior success is retained");
+        }
+
+        record_ok(&hopt, "t1", "peerA", 0);
+        {
+            let m = h.lock().unwrap();
+            assert!(m[&key].last_error.is_none(), "a clean session clears the error");
+        }
+    }
+
+    /// #18: the concurrent dial scheduler does not let one hung peer delay a
+    /// reachable one. A never-completing dial and an immediately-ready dial run
+    /// together; the ready peer is recorded first (it completes at once, the
+    /// hung peer only at the per-dial timeout), and the hung peer is recorded
+    /// as a timeout rather than lost.
+    #[tokio::test]
+    async fn dial_scheduler_ready_peer_not_blocked_by_hung_peer() {
+        use std::sync::Mutex;
+        let targets = vec![
+            ("tA".to_string(), "hung".to_string(), ()),
+            ("tB".to_string(), "ready".to_string(), ()),
+        ];
+        let recorded: Arc<Mutex<Vec<(String, Result<usize, String>)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink = recorded.clone();
+        dial_targets(
+            targets,
+            8,
+            Duration::from_millis(150),
+            |_theory, pk, _key: ()| async move {
+                if pk == "hung" {
+                    std::future::pending::<AppResult<usize>>().await
+                } else {
+                    Ok(7)
+                }
+            },
+            move |_theory, pk, outcome| sink.lock().unwrap().push((pk, outcome)),
+        )
+        .await;
+
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(recorded.len(), 2);
+        // Ready peer completes immediately and is recorded first.
+        assert_eq!(recorded[0].0, "ready");
+        assert_eq!(recorded[0].1, Ok(7));
+        // Hung peer is recorded as a timeout, not dropped.
+        assert_eq!(recorded[1].0, "hung");
+        assert_eq!(recorded[1].1, Err("dial timed out".to_string()));
     }
 
     /// REQ-108 over a duplex: an initiator and a roster-gated responder run a

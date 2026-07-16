@@ -173,11 +173,17 @@ pub fn explain(ctx: &Ctx, literal: &str) -> AppResult<()> {
             }
         }
         None => {
+            // A bare `"explanation": null` is indistinguishable from a
+            // serialization failure. Say why it is null (the literal is not
+            // provable, so there is no derivation to explain) and point at the
+            // command that does explain the block (SPEC-001 REQ-011/REQ-012).
             if ctx.json {
                 println!(
                     "{}",
                     serde_json::json!({"v":1, "theory": v.store.theory_id,
-                        "literal": literal, "explanation": null})
+                        "literal": literal, "explanation": null,
+                        "not_provable": true,
+                        "hint": format!("see `elephant why-not {literal}`")})
                 );
             } else {
                 println!("{literal} is not provable — try `elephant why-not {literal}`");
@@ -239,7 +245,59 @@ fn doc_of<'a>(vv: &'a crate::core::vocab::VocabView, l: &Literal) -> Option<&'a 
         .and_then(|r| r.doc.description.as_deref())
 }
 
+/// Ambiguity-blocking analysis for an `undetermined` why-not blocker (#12).
+///
+/// Spindle reports `undetermined` when a rule's body is satisfied, no attacker
+/// has a satisfied body, yet the literal is still not proven — the honest
+/// signature of *ambiguity blocking*: the head and its complement are each
+/// supported and mutually block, with no preference to break the tie, so both
+/// stay `-D`. Return the opposing literal (the complement) and the rule
+/// label(s) concluding it, so the intended-honest state of an un-adjudicated
+/// conflict gets a precise explanation rather than a "diagnostics gap"
+/// fallthrough. `None` when no opposer concludes the complement (a genuine
+/// diagnostics gap, which stays `undetermined`).
+fn ambiguity_opposers(closure: &Closure, rule_label: &str) -> Option<(Literal, Vec<String>)> {
+    let theory = &closure.theory;
+    let complement = theory.get_rule(rule_label)?.head_literal().complement();
+    let comp_spl = complement.to_spl();
+
+    // Cite only *applicable* opposers. Spindle's `undetermined` is ambiguous
+    // between a genuine mutual block and a diagnostics gap, so a rule whose
+    // head merely matches the complement is not enough: if any of its body
+    // literals has no support at all (not positively concluded, not the head
+    // of any rule/fact) the opposer is inert and citing it would assert a
+    // mutual block that does not exist. A body literal that IS concluded or
+    // IS some rule's head has live — if itself contested — support, which is
+    // exactly the standing of a real ambiguity participant.
+    let positively_concluded: std::collections::HashSet<String> = closure
+        .conclusions
+        .iter()
+        .filter(|c| c.conclusion_type.is_positive())
+        .map(|c| c.literal.to_spl())
+        .collect();
+    let rule_heads: std::collections::HashSet<String> =
+        theory.rules().map(|r| r.head_literal().to_spl()).collect();
+    let has_support =
+        |spl: &str| positively_concluded.contains(spl) || rule_heads.contains(spl);
+
+    let mut opposers: Vec<String> = theory
+        .rules()
+        .filter(|r| r.label != rule_label && r.head_literal().to_spl() == comp_spl)
+        .filter(|r| {
+            r.body
+                .iter()
+                .filter_map(|bl| bl.as_logic().map(|l| l.to_literal()))
+                .all(|l| has_support(&l.to_spl()))
+        })
+        .map(|r| r.template_label().to_string())
+        .collect();
+    opposers.sort();
+    opposers.dedup();
+    (!opposers.is_empty()).then_some((complement, opposers))
+}
+
 pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
+    use spindle_core::query::BlockingType;
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
     let r = spindle_core::query::why_not(&v.closure.theory, &lit)
@@ -250,13 +308,35 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
             .blocked_by
             .iter()
             .map(|b| {
-                serde_json::json!({
+                let mut o = serde_json::json!({
                     "type": b.blocking_type.to_string(),
                     "rule": b.rule_label,
                     "missing": b.missing_literals.iter().map(lit_display).collect::<Vec<_>>(),
                     "blocking_rule": b.blocking_rule,
                     "explanation": b.explanation,
-                })
+                });
+                if b.blocking_type == BlockingType::Undetermined
+                    && let Some((opp, opposers)) = ambiguity_opposers(&v.closure, &b.rule_label)
+                {
+                    let head = v
+                        .closure
+                        .theory
+                        .get_rule(&b.rule_label)
+                        .map(|r| lit_display(r.head_literal()))
+                        .unwrap_or_else(|| literal.to_string());
+                    let opp_disp = lit_display(&opp);
+                    o["type"] = "ambiguity".into();
+                    o["opposing_literal"] = opp_disp.clone().into();
+                    o["opposing_rules"] = opposers.clone().into();
+                    o["explanation"] = format!(
+                        "ambiguity blocking: {head} and {opp_disp} are each supported \
+                         (the latter by {}) and mutually block with no preference to break \
+                         the tie, so both stay -D; assert a `(prefer …)` to adjudicate",
+                        opposers.join(", ")
+                    )
+                    .into();
+                }
+                o
             })
             .collect();
         let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "literal": literal,
@@ -274,7 +354,20 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
             println!("no rule concludes {literal} — nothing to block");
         }
         for b in &r.blocked_by {
-            println!("rule {}: {}", b.rule_label, b.explanation);
+            // Upgrade the diagnostics-gap fallback to a named ambiguity block.
+            let ambiguity = (b.blocking_type == BlockingType::Undetermined)
+                .then(|| ambiguity_opposers(&v.closure, &b.rule_label))
+                .flatten();
+            match &ambiguity {
+                Some((opp, opposers)) => println!(
+                    "rule {}: ambiguity blocking — {} is equally supported by {} with no \
+                     preference to break the tie (assert a `(prefer …)` to adjudicate)",
+                    b.rule_label,
+                    crate::core::vocab::escape_controls(&lit_display(opp)),
+                    opposers.join(", "),
+                ),
+                None => println!("rule {}: {}", b.rule_label, b.explanation),
+            }
             for m in &b.missing_literals {
                 if let Some(desc) = doc_of(&vv, m) {
                     println!(
@@ -292,17 +385,36 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
 // ── require / abduction (REQ-013) ───────────────────────────────────────
 
 pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
+    use spindle_core::query::{
+        DEFAULT_MAX_RAW_CANDIDATES, RequiresOptions, RequiresSearchStatus, requires_with_options,
+    };
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
-    let r = spindle_core::query::abduce(&v.closure.theory, &lit, 8)
-        .map_err(|e| AppError::Reasoner(e.to_string()))?;
+    // Verified abduction (REQ-013, #16): `requires_with_options` injects each
+    // raw candidate and re-reasons, keeping only fact sets that make the goal
+    // positively provable under the same semantics as `what-if`. Raw `abduce`
+    // returned body-satisfaction candidates that an applicable defeater or a
+    // competing rule could still block — a remedy the operator would assert
+    // in vain. `search_status` records whether the search was exhaustive.
+    // Cap on solutions returned. Spindle reports `BoundedComplete` as soon as
+    // this many are accepted, even if more verified solutions remain, so hitting
+    // the cap is treated as non-exhaustive below rather than claiming the search
+    // was complete (#16 review).
+    const MAX_SOLUTIONS: usize = 8;
+    let r = requires_with_options(
+        &v.closure.theory,
+        &lit,
+        RequiresOptions {
+            max_solutions: MAX_SOLUTIONS,
+            max_raw_candidates: DEFAULT_MAX_RAW_CANDIDATES,
+        },
+    )
+    .map_err(|e| AppError::Reasoner(e.to_string()))?;
     let vv = crate::core::vocab::view(&v.closure);
-    let already = r.solutions.iter().any(|s| s.is_already_provable());
-    let open: Vec<&spindle_core::query::AbductionSolution> = r
-        .solutions
-        .iter()
-        .filter(|s| !s.is_already_provable())
-        .collect();
+    let already = r.already_provable;
+    // Every returned solution is already verified and open (an already-provable
+    // goal yields no solutions), so no client-side filtering is needed.
+    let open: Vec<&spindle_core::query::AbductionSolution> = r.solutions.iter().collect();
     let solutions: Vec<Vec<String>> = open
         .iter()
         .map(|s| {
@@ -311,9 +423,20 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
             f
         })
         .collect();
+    // Exhaustive only if the search terminated within bounds AND the returned
+    // count did not hit the solution cap (spindle reports BoundedComplete on
+    // reaching `max_solutions`, which is not the same as "no more exist").
+    let exhaustive = matches!(r.search_status, RequiresSearchStatus::BoundedComplete)
+        && solutions.len() < MAX_SOLUTIONS;
     if ctx.json {
         let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
-            "already_provable": already, "solutions": solutions});
+            "already_provable": already, "solutions": solutions,
+            "search_status": if exhaustive { "bounded-complete" } else { "budget-exhausted" },
+            "verification": {
+                "raw_examined": r.verification.raw_examined,
+                "accepted": r.verification.accepted,
+                "rejected": r.verification.rejected,
+            }});
         let docs = docs_join(&vv, open.iter().flat_map(|s| s.facts.iter()));
         if !docs.is_empty() {
             obj["docs"] = docs.into();
@@ -322,7 +445,14 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
     } else if already {
         println!("{literal} is already provable");
     } else if solutions.is_empty() {
-        println!("no fact set found that would prove {literal} (bounded search)");
+        println!(
+            "no fact set found that would prove {literal} ({})",
+            if exhaustive {
+                "bounded search, exhausted"
+            } else {
+                "search budget reached"
+            }
+        );
     } else {
         println!("provable if all added:");
         for s in &open {
@@ -344,11 +474,34 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
             };
             println!("  {}", rendered.join("  "));
         }
+        if !exhaustive {
+            println!("(search budget reached — more solutions may exist)");
+        }
     }
     Ok(())
 }
 
 // ── what-if (REQ-014) ───────────────────────────────────────────────────
+
+/// A what-if hypothetical must be a *fact*. what-if adds each hypothetical to
+/// the theory as a fact and re-reasons — spindle's `HypotheticalClaim` is
+/// fact-only — so a `(prefer …)` or a rule handed to it is coerced into an
+/// inert atom by the `(given …)` sugar and never installed as a superiority or
+/// rule. That silently produced a wrong answer for the single most useful
+/// hypothetical (an *adjudication*), so reject it with a clear error instead
+/// (#11). Detection reuses the SPL recogniser: a plain fact literal is not a
+/// standalone statement (it must be wrapped `(given …)`), so a raw string that
+/// parses to a superiority or a non-fact rule is structure what-if cannot take.
+fn structural_hypothetical(raw: &str) -> Option<&'static str> {
+    let t = spindle_parser::parse_spl(raw.trim()).ok()?;
+    if !t.superiorities().is_empty() {
+        return Some("a preference (prefer …)");
+    }
+    if t.rules().any(|r| !r.is_fact()) {
+        return Some("a rule");
+    }
+    None
+}
 
 pub fn what_if(ctx: &Ctx, facts_then_goal: &[String]) -> AppResult<()> {
     let (goal_text, facts) = facts_then_goal
@@ -356,6 +509,17 @@ pub fn what_if(ctx: &Ctx, facts_then_goal: &[String]) -> AppResult<()> {
         .ok_or_else(|| AppError::Usage("what-if needs <facts…> <goal>".into()))?;
     let v = view(ctx)?;
     let goal = parse_literal(goal_text)?;
+    for f in facts {
+        if let Some(kind) = structural_hypothetical(f) {
+            return Err(AppError::Usage(format!(
+                "what-if hypotheticals must be facts, but '{f}' is {kind}, which \
+                 what-if cannot install — it adds each hypothetical as a fact and \
+                 re-reasons. To test an adjudication non-destructively is not yet \
+                 supported here; assert it and then retract it: \
+                 `elephant assert '{f}'` followed by `elephant retract <sentence-id>`."
+            )));
+        }
+    }
     let hyps: Vec<spindle_core::query::HypotheticalClaim> = facts
         .iter()
         .map(|f| {
@@ -450,6 +614,129 @@ pub fn commitments(ctx: &Ctx) -> AppResult<()> {
     Ok(())
 }
 
+// ── show: inspect one entry by sentence-id (#9) ─────────────────────────
+
+/// The read counterpart to the sentence-ids that producers mint: locate the
+/// single admitted entry the id names and print it, rather than forcing a
+/// `log --json | jq 'select(.sentence_id==…)'` round-trip. Reuses the same
+/// by-id lookup and the same "no entry with sentence-id …" miss error the
+/// retract/concede pre-checks use (src/cli.rs).
+pub fn show(ctx: &Ctx, sentence_id: &str) -> AppResult<()> {
+    use crate::core::envelope::SpeechAct;
+    let v = view(ctx)?;
+    // Resolve by the act's own sentence-id, or — for retracts/concedes, which
+    // carry none — by the stable `entry_id` that `log` advertises as their
+    // addressable id (#14). Without the second arm, `show` could not inspect
+    // the very ids `log` hands out for those entries.
+    let a = v
+        .closure
+        .admitted
+        .iter()
+        .find(|a| {
+            a.sid.as_deref() == Some(sentence_id)
+                || crate::core::envelope::Entry::sentence_id(
+                    &a.entry.theory,
+                    &a.entry.signer,
+                    a.entry.hlc,
+                ) == sentence_id
+        })
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "no entry with sentence-id {sentence_id} in this theory"
+            ))
+        })?;
+
+    let status = if a.retracted {
+        "retracted"
+    } else if a.label_shadowed {
+        "shadowed"
+    } else {
+        "active"
+    };
+    let timestamp = chrono::DateTime::from_timestamp_millis(a.entry.hlc.wall_ms as i64)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default();
+
+    // Act-specific projection: the SPL/literal form, plus the two back-refs a
+    // speech act can carry (concede → in_reply_to, retract → retracts).
+    let (spl_form, in_reply_to, retracts): (Option<String>, Option<String>, Option<String>) =
+        match &a.act {
+            SpeechAct::Assert { spl, .. } => (Some(spl.clone()), None, None),
+            SpeechAct::Commit {
+                goal, trigger, by, ..
+            } => {
+                let mut s = format!("commit {goal}");
+                if !trigger.is_empty() {
+                    s.push_str(&format!(" when {trigger}"));
+                }
+                if let Some(b) = by {
+                    s.push_str(&format!(" by {b}"));
+                }
+                (Some(s), None, None)
+            }
+            SpeechAct::Request {
+                goal,
+                addressee,
+                trigger,
+                ..
+            } => {
+                let mut s = format!("request {addressee} {goal}");
+                if !trigger.is_empty() {
+                    s.push_str(&format!(" when {trigger}"));
+                }
+                (Some(s), None, None)
+            }
+            SpeechAct::Retract { target, reason } => {
+                let s = if reason.is_empty() {
+                    "retract".into()
+                } else {
+                    format!("retract ({reason})")
+                };
+                (Some(s), None, Some(target.clone()))
+            }
+            SpeechAct::Concede {
+                literal,
+                in_reply_to: irt,
+            } => (Some(literal.clone()), Some(irt.clone()), None),
+            other => (Some(other.performative().to_string()), None, None),
+        };
+
+    if ctx.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "v": 1,
+                "theory": v.store.theory_id,
+                "sentence_id": sentence_id,
+                "performative": a.act.performative(),
+                "signer": a.entry.signer,
+                "hlc": {"wall_ms": a.entry.hlc.wall_ms, "logical": a.entry.hlc.logical},
+                "timestamp": timestamp,
+                "status": status,
+                "spl_form": spl_form,
+                "in_reply_to": in_reply_to,
+                "retracts": retracts,
+                "entry": serde_json::to_value(&a.entry).unwrap_or(serde_json::Value::Null),
+            })
+        );
+    } else {
+        println!("{}  {sentence_id}", a.act.performative());
+        if let Some(s) = &spl_form {
+            println!("  {}", crate::core::vocab::escape_controls(s));
+        }
+        println!("  signer   {}", a.entry.signer);
+        println!("  hlc      {timestamp}  (logical {})", a.entry.hlc.logical);
+        if let Some(r) = &in_reply_to {
+            println!("  re       {r}");
+        }
+        if let Some(t) = &retracts {
+            println!("  retracts {t}");
+        }
+        println!("  status   {status}");
+    }
+    Ok(())
+}
+
 // ── log / journal (REQ-016) ─────────────────────────────────────────────
 
 pub fn log(ctx: &Ctx) -> AppResult<()> {
@@ -469,8 +756,22 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
     }
     let mut items: Vec<serde_json::Value> = Vec::new();
     for a in &v.closure.admitted {
+        // Every entry gets a stable, individually-addressable `entry_id`
+        // derived from the entry's own (theory, signer, hlc) — the exact
+        // derivation the producer used for a sentence-id, so for an assert it
+        // equals `sid` (including the genesis entry, whose id is derived under
+        // the sentinel `genesis` theory, not the store id). Retracts (and
+        // concedes) carry no `sid` of their own, so without this an
+        // order-independent journal fingerprint keyed on `sid` silently
+        // collapses every retract onto `null` (#14).
+        let entry_id = crate::core::envelope::Entry::sentence_id(
+            &a.entry.theory,
+            &a.entry.signer,
+            a.entry.hlc,
+        );
         let mut item = serde_json::json!({
             "sid": a.sid,
+            "entry_id": entry_id,
             "signer": a.entry.signer,
             "performative": a.act.performative(),
             "hlc": {"wall_ms": a.entry.hlc.wall_ms, "logical": a.entry.hlc.logical},
@@ -483,6 +784,11 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
             },
             "cbcl": a.entry.cbcl,
         });
+        // A retract's target was only reachable inside the opaque `cbcl`
+        // blob; surface it as a first-class field so retracts are addressable.
+        if let crate::core::envelope::SpeechAct::Retract { target, .. } = &a.act {
+            item["retracts"] = serde_json::json!(target);
+        }
         let mine: Vec<serde_json::Value> = redefs
             .iter()
             .filter(|r| Some(&r.sid) == a.sid.as_ref())
@@ -501,8 +807,10 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
         items.push(item);
     }
     for (e, q) in &v.closure.quarantined {
+        let entry_id = crate::core::envelope::Entry::sentence_id(&e.theory, &e.signer, e.hlc);
         items.push(serde_json::json!({
             "sid": null,
+            "entry_id": entry_id,
             "signer": e.signer,
             "performative": null,
             "hlc": {"wall_ms": e.hlc.wall_ms, "logical": e.hlc.logical},
@@ -535,12 +843,23 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
                         .join("")
                 })
                 .unwrap_or_default();
+            // Identify by the act's own sid where it has one, else the stable
+            // entry_id (retracts/concedes) so every line is addressable.
+            let id = i["sid"]
+                .as_str()
+                .or_else(|| i["entry_id"].as_str())
+                .unwrap_or("-");
+            let retracts = i["retracts"]
+                .as_str()
+                .map(|t| format!(" → {t}"))
+                .unwrap_or_default();
             println!(
-                "{}  {:<9} {:<8} {}{}",
+                "{}  {:<9} {:<8} {}{}{}",
                 i["hlc"]["wall_ms"],
                 i["performative"].as_str().unwrap_or("?"),
                 i["status"].as_str().unwrap_or("?"),
-                i["sid"].as_str().unwrap_or("-"),
+                id,
+                retracts,
                 redef,
             );
         }
@@ -550,6 +869,20 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
 
 // ── describe / trace (SPEC-003 REQ-208) ─────────────────────────────────
 
+/// A meta property value as plain JSON — a string stays a string, a list
+/// becomes a JSON array. The `--json` contract (SPEC-003 REQ-208) is a stable
+/// data interface: rendering `MetaValue` through `Debug` (`format!("{val:?}")`)
+/// leaked Rust syntax (`String("…")`) that every consumer then had to strip.
+fn meta_value_json(val: &spindle_core::theory::MetaValue) -> serde_json::Value {
+    use spindle_core::theory::MetaValue;
+    match val {
+        MetaValue::String(s) => serde_json::Value::String(s.clone()),
+        MetaValue::List(items) => {
+            serde_json::Value::Array(items.iter().cloned().map(serde_json::Value::String).collect())
+        }
+    }
+}
+
 pub fn describe(ctx: &Ctx, labels: &[String]) -> AppResult<()> {
     let v = view(ctx)?;
     let mut out = Vec::new();
@@ -557,11 +890,11 @@ pub fn describe(ctx: &Ctx, labels: &[String]) -> AppResult<()> {
         let rule = v.closure.theory.get_rule(label);
         let meta = v.closure.theory.get_meta(label);
         let props: serde_json::Value = match meta {
-            Some(m) => serde_json::json!(
+            Some(m) => serde_json::Value::Object(
                 m.properties
                     .iter()
-                    .map(|(k, val)| (k.clone(), format!("{val:?}")))
-                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .map(|(k, val)| (k.clone(), meta_value_json(val)))
+                    .collect(),
             ),
             None => serde_json::json!({}),
         };

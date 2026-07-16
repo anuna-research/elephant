@@ -96,6 +96,30 @@ fn daemon_lifecycle_and_routing() {
     assert_eq!(out.status.code(), Some(7));
 }
 
+/// #15: `daemon status` exposes the per-peer sync-health contract — a `sync`
+/// array (grouped by theory) and the `sync_interval_s` used to derive
+/// staleness. With continuous sync off, sync is empty and the interval null.
+#[test]
+fn daemon_status_exposes_sync_health_fields() {
+    let e = Env::new();
+    e.json(&["daemon", "start"]);
+    let st = e.json(&["daemon", "status"]);
+    assert!(
+        st.get("sync").is_some_and(|s| s.is_array()),
+        "status must carry a `sync` array: {st}"
+    );
+    assert!(
+        st["sync"].as_array().unwrap().is_empty(),
+        "no peers dialled with sync off: {st}"
+    );
+    assert!(
+        st.get("sync_interval_s").is_some(),
+        "status must carry sync_interval_s (null when sync is off): {st}"
+    );
+    assert!(st["sync_interval_s"].is_null(), "sync is off in this run: {st}");
+    e.ok(&["daemon", "stop"]);
+}
+
 /// TEST-109: a watch stream sees the tag flip pushed by a daemon merge.
 #[test]
 fn watch_receives_pushed_flip() {

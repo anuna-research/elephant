@@ -30,6 +30,13 @@ pub struct AppState {
     views: Arc<Mutex<BTreeMap<String, Arc<crate::core::vocab::VocabView>>>>,
     events: tokio::sync::broadcast::Sender<WatchEvent>,
     counters: Arc<Mutex<Counters>>,
+    /// Per-(theory, peer) sync health, updated by the continuous-sync loops
+    /// and surfaced by `status` (#15). Session-scoped counters cannot reveal
+    /// divergence from a peer; this can.
+    sync_health: crate::p2p::sync::HealthHandle,
+    /// The configured dial interval in seconds (if continuous sync is on),
+    /// used to derive per-peer staleness in `status`.
+    sync_interval_s: Option<u64>,
     /// Serialises store writes: the daemon is the single writer (REQ-102),
     /// and concurrent handler tasks must not interleave open→append→flush.
     write_gate: Arc<Mutex<()>>,
@@ -72,6 +79,8 @@ pub fn serve(paths: Paths, ident: Identity, lock: super::DaemonLock) -> AppResul
             views: Arc::new(Mutex::new(BTreeMap::new())),
             events,
             counters: Arc::new(Mutex::new(Counters::default())),
+            sync_health: Arc::new(Mutex::new(Default::default())),
+            sync_interval_s: crate::p2p::sync::configured_interval().map(|d| d.as_secs()),
             write_gate: Arc::new(Mutex::new(())),
             shutdown: Arc::new(tokio::sync::Notify::new()),
         };
@@ -111,13 +120,15 @@ pub fn serve(paths: Paths, ident: Identity, lock: super::DaemonLock) -> AppResul
         let sync_task = crate::p2p::sync::configured_interval().map(|interval| {
             let paths = paths.clone();
             let ident = Arc::new(ident);
+            let health = Some(state.sync_health.clone());
             // A dedicated shutdown, NOT the axum one: `notify_one` wakes a
             // single waiter, so sharing it would race the server's own
             // shutdown. We abort this task after the server stops.
             let shutdown = Arc::new(tokio::sync::Notify::new());
             tokio::spawn(async move {
                 if let Err(e) =
-                    crate::p2p::sync::run(paths, ident, shutdown, interval, Some(refresh_tx)).await
+                    crate::p2p::sync::run(paths, ident, shutdown, interval, Some(refresh_tx), health)
+                        .await
                 {
                     tracing::warn!("continuous sync stopped: {e}");
                 }
@@ -215,11 +226,16 @@ async fn status(
         })
         .unwrap_or_default();
     let c = state.counters.lock().unwrap();
+    let sync = sync_health_json(&state);
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "v": 1,
             "pid": std::process::id(),
+            // The daemon's own resolved store (#8): a shell and its daemon on
+            // different homes (the launchd-vs-interactive split) otherwise
+            // manifests only as "sync silently does nothing".
+            "home": state.paths.home.display().to_string(),
             "uptime_s": state.started_at.elapsed().as_secs(),
             "theories": theories,
             "counters": {
@@ -229,8 +245,60 @@ async fn status(
                 "advisories_emitted": c.advisories_emitted,
                 "vocab_views_served": c.vocab_views_served,
             },
+            // Per-theory, per-peer sync health (#15): last-sync/last-error and
+            // a derived staleness flag, so either side can tell it has not
+            // successfully synced with a peer since some time.
+            "sync_interval_s": state.sync_interval_s,
+            "sync": sync,
         })),
     )
+}
+
+/// True when the link to a peer is stale: never synced, the most recent
+/// attempt errored (after the last success), or the last success is older than
+/// three dial intervals. With continuous sync off (`interval` = None), only a
+/// never-synced/errored peer is stale — there is no interval to age against.
+fn peer_stale(h: &crate::p2p::sync::PeerHealth, now_ms: i64, interval_s: Option<u64>) -> bool {
+    let parse = |ts: &str| {
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .ok()
+            .map(|d| d.timestamp_millis())
+    };
+    let ok_ms = h.last_sync_ok.as_deref().and_then(parse);
+    let err_ms = h.last_error_at.as_deref().and_then(parse);
+    let Some(ok_ms) = ok_ms else {
+        return true; // never synced OK
+    };
+    if let Some(err_ms) = err_ms
+        && err_ms >= ok_ms
+    {
+        return true; // the most recent attempt failed
+    }
+    match interval_s {
+        Some(iv) => now_ms - ok_ms > (3 * iv as i64) * 1000,
+        None => false,
+    }
+}
+
+/// Group the shared health map by theory for `status`.
+fn sync_health_json(state: &AppState) -> Vec<serde_json::Value> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let health = state.sync_health.lock().unwrap();
+    let mut by_theory: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for ((theory, peer), h) in health.iter() {
+        by_theory.entry(theory.clone()).or_default().push(serde_json::json!({
+            "peer": peer,
+            "last_sync_ok": h.last_sync_ok,
+            "last_applied": h.last_applied,
+            "last_error": h.last_error,
+            "last_error_at": h.last_error_at,
+            "stale": peer_stale(h, now_ms, state.sync_interval_s),
+        }));
+    }
+    by_theory
+        .into_iter()
+        .map(|(theory, peers)| serde_json::json!({"theory": theory, "peers": peers}))
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -637,7 +705,59 @@ async fn stop(State(state): State<AppState>, headers: axum::http::HeaderMap) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{advice_from_query, top_level_form_count};
+    use super::{advice_from_query, peer_stale, top_level_form_count};
+
+    fn ms(ts: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .unwrap()
+            .timestamp_millis()
+    }
+
+    /// #15: staleness is derived from last-sync/last-error and the interval.
+    #[test]
+    fn peer_stale_derivation() {
+        use crate::p2p::sync::PeerHealth;
+        let now = ms("2026-07-16T12:00:00Z");
+        let interval = Some(10u64); // stale after 3×10 = 30s
+
+        // Never synced OK → stale, regardless of interval.
+        assert!(peer_stale(&PeerHealth::default(), now, interval));
+        assert!(peer_stale(&PeerHealth::default(), now, None));
+
+        // Fresh success, no error → healthy.
+        let fresh = PeerHealth {
+            last_sync_ok: Some("2026-07-16T11:59:55Z".into()), // 5s ago
+            ..Default::default()
+        };
+        assert!(!peer_stale(&fresh, now, interval));
+
+        // Success older than 3× interval → stale.
+        let aged = PeerHealth {
+            last_sync_ok: Some("2026-07-16T11:59:00Z".into()), // 60s ago > 30s
+            ..Default::default()
+        };
+        assert!(peer_stale(&aged, now, interval));
+        // …but with no interval there is nothing to age against.
+        assert!(!peer_stale(&aged, now, None));
+
+        // Most recent attempt errored (after the last success) → stale.
+        let errored = PeerHealth {
+            last_sync_ok: Some("2026-07-16T11:59:55Z".into()),
+            last_error: Some("transport: connection lost".into()),
+            last_error_at: Some("2026-07-16T11:59:58Z".into()), // after the ok
+            ..Default::default()
+        };
+        assert!(peer_stale(&errored, now, interval));
+
+        // An older error that predates the last success does not mark stale.
+        let recovered = PeerHealth {
+            last_sync_ok: Some("2026-07-16T11:59:58Z".into()),
+            last_error: Some("transport: connection lost".into()),
+            last_error_at: Some("2026-07-16T11:59:55Z".into()), // before the ok
+            ..Default::default()
+        };
+        assert!(!peer_stale(&recovered, now, interval));
+    }
 
     #[test]
     fn advice_query_is_infallible_and_only_false_disables() {
