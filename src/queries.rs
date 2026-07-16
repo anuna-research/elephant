@@ -245,7 +245,35 @@ fn doc_of<'a>(vv: &'a crate::core::vocab::VocabView, l: &Literal) -> Option<&'a 
         .and_then(|r| r.doc.description.as_deref())
 }
 
+/// Ambiguity-blocking analysis for an `undetermined` why-not blocker (#12).
+///
+/// Spindle reports `undetermined` when a rule's body is satisfied, no attacker
+/// has a satisfied body, yet the literal is still not proven — the honest
+/// signature of *ambiguity blocking*: the head and its complement are each
+/// supported and mutually block, with no preference to break the tie, so both
+/// stay `-D`. Return the opposing literal (the complement) and the rule
+/// label(s) concluding it, so the intended-honest state of an un-adjudicated
+/// conflict gets a precise explanation rather than a "diagnostics gap"
+/// fallthrough. `None` when no opposer concludes the complement (a genuine
+/// diagnostics gap, which stays `undetermined`).
+fn ambiguity_opposers(
+    theory: &spindle_core::theory::Theory,
+    rule_label: &str,
+) -> Option<(Literal, Vec<String>)> {
+    let complement = theory.get_rule(rule_label)?.head_literal().complement();
+    let comp_spl = complement.to_spl();
+    let mut opposers: Vec<String> = theory
+        .rules()
+        .filter(|r| r.label != rule_label && r.head_literal().to_spl() == comp_spl)
+        .map(|r| r.template_label().to_string())
+        .collect();
+    opposers.sort();
+    opposers.dedup();
+    (!opposers.is_empty()).then_some((complement, opposers))
+}
+
 pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
+    use spindle_core::query::BlockingType;
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
     let r = spindle_core::query::why_not(&v.closure.theory, &lit)
@@ -256,13 +284,36 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
             .blocked_by
             .iter()
             .map(|b| {
-                serde_json::json!({
+                let mut o = serde_json::json!({
                     "type": b.blocking_type.to_string(),
                     "rule": b.rule_label,
                     "missing": b.missing_literals.iter().map(lit_display).collect::<Vec<_>>(),
                     "blocking_rule": b.blocking_rule,
                     "explanation": b.explanation,
-                })
+                });
+                if b.blocking_type == BlockingType::Undetermined
+                    && let Some((opp, opposers)) =
+                        ambiguity_opposers(&v.closure.theory, &b.rule_label)
+                {
+                    let head = v
+                        .closure
+                        .theory
+                        .get_rule(&b.rule_label)
+                        .map(|r| lit_display(r.head_literal()))
+                        .unwrap_or_else(|| literal.to_string());
+                    let opp_disp = lit_display(&opp);
+                    o["type"] = "ambiguity".into();
+                    o["opposing_literal"] = opp_disp.clone().into();
+                    o["opposing_rules"] = opposers.clone().into();
+                    o["explanation"] = format!(
+                        "ambiguity blocking: {head} and {opp_disp} are each supported \
+                         (the latter by {}) and mutually block with no preference to break \
+                         the tie, so both stay -D; assert a `(prefer …)` to adjudicate",
+                        opposers.join(", ")
+                    )
+                    .into();
+                }
+                o
             })
             .collect();
         let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "literal": literal,
@@ -280,7 +331,20 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
             println!("no rule concludes {literal} — nothing to block");
         }
         for b in &r.blocked_by {
-            println!("rule {}: {}", b.rule_label, b.explanation);
+            // Upgrade the diagnostics-gap fallback to a named ambiguity block.
+            let ambiguity = (b.blocking_type == BlockingType::Undetermined)
+                .then(|| ambiguity_opposers(&v.closure.theory, &b.rule_label))
+                .flatten();
+            match &ambiguity {
+                Some((opp, opposers)) => println!(
+                    "rule {}: ambiguity blocking — {} is equally supported by {} with no \
+                     preference to break the tie (assert a `(prefer …)` to adjudicate)",
+                    b.rule_label,
+                    crate::core::vocab::escape_controls(&lit_display(opp)),
+                    opposers.join(", "),
+                ),
+                None => println!("rule {}: {}", b.rule_label, b.explanation),
+            }
             for m in &b.missing_literals {
                 if let Some(desc) = doc_of(&vv, m) {
                     println!(

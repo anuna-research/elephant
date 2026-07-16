@@ -242,6 +242,44 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #12: an un-adjudicated mutual conflict is reported as a first-class
+/// `ambiguity` block naming the opposing rule, not an `undetermined`
+/// diagnostics-gap fallthrough.
+#[test]
+fn why_not_reports_ambiguity_blocking() {
+    let e = Env::new();
+    // Two-level mutual block: lab-origin and zoonotic-origin each attack the
+    // other, both supported, no preference — both settle at -D.
+    e.ok(&["assert", "ev-lab", "-t", "release"]);
+    e.ok(&["assert", "ev-zoo", "-t", "release"]);
+    e.ok(&["assert", "(normally r-lab ev-lab lab-origin)", "-t", "release"]);
+    e.ok(&["assert", "(normally r-zoo ev-zoo zoonotic-origin)", "-t", "release"]);
+    e.ok(&["assert", "(normally r-lab-not-zoo lab-origin (not zoonotic-origin))", "-t", "release"]);
+    e.ok(&["assert", "(normally r-zoo-not-lab zoonotic-origin (not lab-origin))", "-t", "release"]);
+
+    let w = e.json(&["why-not", "lab-origin", "-t", "release"]);
+    let b = w["blocked_by"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["type"] == "ambiguity")
+        .unwrap_or_else(|| panic!("expected an ambiguity blocker, got: {w}"));
+    assert_eq!(b["type"], "ambiguity");
+    assert!(
+        b["opposing_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "r-zoo-not-lab"),
+        "ambiguity must name the opposing rule: {b}"
+    );
+    assert!(
+        b["opposing_literal"].as_str().unwrap().contains("lab-origin"),
+        "ambiguity must name the opposing literal: {b}"
+    );
+    assert!(b["explanation"].as_str().unwrap().contains("prefer"), "explanation hints at adjudication");
+}
+
 /// #9: `show <sentence-id>` inspects one entry without dumping the journal;
 /// a miss reuses the same "no entry with sentence-id …" error.
 #[test]
