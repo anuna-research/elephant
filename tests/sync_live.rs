@@ -184,6 +184,7 @@ async fn two_daemons_converge_over_loopback() {
         shutdown.clone(),
         interval,
         None,
+        None,
     ));
     let daemon_b = tokio::spawn(p2p::sync::run_with_endpoint(
         ep_b,
@@ -191,6 +192,7 @@ async fn two_daemons_converge_over_loopback() {
         Arc::new(id::load(&bob.paths).unwrap()),
         shutdown.clone(),
         interval,
+        None,
         None,
     ));
 

@@ -119,6 +119,53 @@ fn note_synced(refresh: &Option<RefreshTx>, theory: &str, applied: usize) {
 /// applied peer entries (see `daemon::api::serve`).
 pub type RefreshTx = tokio::sync::mpsc::UnboundedSender<String>;
 
+// ── per-peer sync health (SPEC-002; #15) ────────────────────────────────
+
+/// Health of the sync link to one peer for one theory. `daemon status`
+/// exposes it so a node can locally tell it has diverged from a peer — the
+/// session-scoped counters (`entries_merged`, resets per daemon run) cannot.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct PeerHealth {
+    /// RFC 3339 timestamp of the last session that completed without error.
+    pub last_sync_ok: Option<String>,
+    /// Deltas applied on that last successful session.
+    pub last_applied: u64,
+    /// The last error message, and when it happened, if the most recent
+    /// attempt (or a more recent one than the last success) failed.
+    pub last_error: Option<String>,
+    pub last_error_at: Option<String>,
+}
+
+/// Shared per-(theory, peer) health, updated by the sync loops and read by the
+/// `daemon status` handler. `None` in the standalone sync test harness.
+pub type SyncHealth = std::collections::BTreeMap<(String, String), PeerHealth>;
+pub type HealthHandle = Arc<std::sync::Mutex<SyncHealth>>;
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+fn record_ok(health: &Option<HealthHandle>, theory: &str, peer: &str, applied: usize) {
+    if let Some(h) = health {
+        let mut m = h.lock().unwrap();
+        let e = m.entry((theory.to_string(), peer.to_string())).or_default();
+        e.last_sync_ok = Some(now_rfc3339());
+        e.last_applied = applied as u64;
+        // A clean session clears the standing error.
+        e.last_error = None;
+        e.last_error_at = None;
+    }
+}
+
+fn record_err(health: &Option<HealthHandle>, theory: &str, peer: &str, msg: &str) {
+    if let Some(h) = health {
+        let mut m = h.lock().unwrap();
+        let e = m.entry((theory.to_string(), peer.to_string())).or_default();
+        e.last_error = Some(msg.to_string());
+        e.last_error_at = Some(now_rfc3339());
+    }
+}
+
 // ── iroh glue ───────────────────────────────────────────────────────────
 
 /// Serve one accepted sync connection: the roster gate keys off the QUIC
@@ -128,6 +175,7 @@ async fn handle_connection(
     conn: iroh::endpoint::Connection,
     paths: &Paths,
     refresh: &Option<RefreshTx>,
+    health: &Option<HealthHandle>,
 ) -> AppResult<()> {
     let peer = conn.remote_id().to_string();
     let (send, recv) = conn
@@ -136,6 +184,8 @@ async fn handle_connection(
         .map_err(|e| AppError::Transport(format!("accept sync stream: {e}")))?;
     let mut stream = tokio::io::join(recv, send);
     let (theory, applied) = sync_as_responder(&mut stream, &peer, paths).await?;
+    // A completed accept is a successful sync with this peer, too.
+    record_ok(health, &theory, &peer, applied);
     note_synced(refresh, &theory, applied);
     Ok(())
 }
@@ -148,6 +198,7 @@ async fn dial_once(
     paths: &Paths,
     ident: &Identity,
     refresh: &Option<RefreshTx>,
+    health: &Option<HealthHandle>,
 ) {
     let me = transport::node_pk(ident);
     let theories = match crate::store::list_theories(paths) {
@@ -167,20 +218,31 @@ async fn dial_once(
             let Ok(peer_id) = transport::parse_node_pk(&pk) else {
                 continue;
             };
-            match transport::dial_sync(endpoint, peer_id).await {
-                Ok(conn) => match conn.open_bi().await {
-                    Ok((send, recv)) => {
-                        let mut stream = tokio::io::join(recv, send);
-                        match sync_as_initiator(&mut stream, &theory, paths).await {
-                            Ok(applied) => note_synced(refresh, &theory, applied),
-                            Err(e) => {
-                                tracing::debug!(%theory, %pk, "sync session failed: {e}")
-                            }
-                        }
-                    }
-                    Err(e) => tracing::debug!(%theory, %pk, "open sync stream: {e}"),
-                },
-                Err(e) => tracing::debug!(%theory, %pk, "dial peer: {e}"),
+            // Collapse the dial → open → session chain to one per-peer
+            // outcome so `daemon status` can report last-sync/last-error per
+            // (theory, peer) (#15) — a dropped QUIC/relay path is otherwise
+            // invisible until fingerprints are compared out-of-band.
+            let outcome: AppResult<usize> = async {
+                let conn = transport::dial_sync(endpoint, peer_id)
+                    .await
+                    .map_err(|e| AppError::Transport(format!("dial peer: {e}")))?;
+                let (send, recv) = conn
+                    .open_bi()
+                    .await
+                    .map_err(|e| AppError::Transport(format!("open sync stream: {e}")))?;
+                let mut stream = tokio::io::join(recv, send);
+                sync_as_initiator(&mut stream, &theory, paths).await
+            }
+            .await;
+            match outcome {
+                Ok(applied) => {
+                    record_ok(health, &theory, &pk, applied);
+                    note_synced(refresh, &theory, applied);
+                }
+                Err(e) => {
+                    tracing::debug!(%theory, %pk, "sync failed: {e}");
+                    record_err(health, &theory, &pk, &e.to_string());
+                }
             }
         }
     }
@@ -194,9 +256,10 @@ pub async fn run(
     shutdown: Arc<tokio::sync::Notify>,
     interval: Duration,
     refresh: Option<RefreshTx>,
+    health: Option<HealthHandle>,
 ) -> AppResult<()> {
     let endpoint = transport::sync_endpoint(&ident).await?;
-    run_with_endpoint(endpoint, paths, ident, shutdown, interval, refresh).await
+    run_with_endpoint(endpoint, paths, ident, shutdown, interval, refresh, health).await
 }
 
 /// The accept + dial loops over an already-bound endpoint. Split from [`run`]
@@ -210,6 +273,7 @@ pub async fn run_with_endpoint(
     shutdown: Arc<tokio::sync::Notify>,
     interval: Duration,
     refresh: Option<RefreshTx>,
+    health: Option<HealthHandle>,
 ) -> AppResult<()> {
     tracing::info!(id = %endpoint.id(), "sync endpoint listening");
 
@@ -219,6 +283,7 @@ pub async fn run_with_endpoint(
         let paths = paths.clone();
         let shutdown = shutdown.clone();
         let refresh = refresh.clone();
+        let health = health.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -227,10 +292,11 @@ pub async fn run_with_endpoint(
                         let Some(incoming) = incoming else { break };
                         let paths = paths.clone();
                         let refresh = refresh.clone();
+                        let health = health.clone();
                         tokio::spawn(async move {
                             match incoming.await {
                                 Ok(conn) => {
-                                    if let Err(e) = handle_connection(conn, &paths, &refresh).await {
+                                    if let Err(e) = handle_connection(conn, &paths, &refresh, &health).await {
                                         tracing::debug!("incoming sync failed: {e}");
                                     }
                                 }
@@ -247,7 +313,7 @@ pub async fn run_with_endpoint(
     loop {
         tokio::select! {
             _ = shutdown.notified() => break,
-            _ = tokio::time::sleep(interval) => dial_once(&endpoint, &paths, &ident, &refresh).await,
+            _ = tokio::time::sleep(interval) => dial_once(&endpoint, &paths, &ident, &refresh, &health).await,
         }
     }
     accept.abort();
@@ -332,6 +398,40 @@ mod tests {
         s_store.append(&entry).unwrap();
         drop(clock);
         theory_id
+    }
+
+    /// #15: record_ok/record_err maintain per-(theory, peer) health — a
+    /// success stamps last_sync_ok and clears any standing error; an error
+    /// stamps last_error while retaining the prior last_sync_ok.
+    #[test]
+    fn sync_health_records_ok_and_error() {
+        let h: HealthHandle = Arc::new(std::sync::Mutex::new(SyncHealth::default()));
+        let hopt = Some(h.clone());
+        let key = ("t1".to_string(), "peerA".to_string());
+
+        record_ok(&hopt, "t1", "peerA", 5);
+        {
+            let m = h.lock().unwrap();
+            let e = &m[&key];
+            assert_eq!(e.last_applied, 5);
+            assert!(e.last_sync_ok.is_some());
+            assert!(e.last_error.is_none());
+        }
+
+        record_err(&hopt, "t1", "peerA", "connection lost");
+        {
+            let m = h.lock().unwrap();
+            let e = &m[&key];
+            assert_eq!(e.last_error.as_deref(), Some("connection lost"));
+            assert!(e.last_error_at.is_some());
+            assert!(e.last_sync_ok.is_some(), "prior success is retained");
+        }
+
+        record_ok(&hopt, "t1", "peerA", 0);
+        {
+            let m = h.lock().unwrap();
+            assert!(m[&key].last_error.is_none(), "a clean session clears the error");
+        }
     }
 
     /// REQ-108 over a duplex: an initiator and a roster-gated responder run a

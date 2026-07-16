@@ -1128,6 +1128,7 @@ fn handle_daemon(ctx: &Ctx, cmd: DaemonCmd) -> AppResult<()> {
                         st["theories"].as_array().map(|a| a.len()).unwrap_or(0),
                         st["home"].as_str().unwrap_or("?"),
                     );
+                    print_sync_health(&st);
                 }
                 Ok(())
             }
@@ -1156,6 +1157,37 @@ fn handle_daemon(ctx: &Ctx, cmd: DaemonCmd) -> AppResult<()> {
                 println!("daemon stopped");
             }
             Ok(())
+        }
+    }
+}
+
+/// Render the daemon's per-peer sync health (#15) under `daemon status` text
+/// output: one summary line per theory, then a line per peer with its
+/// staleness, last successful sync, and last error.
+fn print_sync_health(st: &serde_json::Value) {
+    let Some(sync) = st["sync"].as_array() else {
+        return;
+    };
+    for theory in sync {
+        let peers = theory["peers"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let stale = peers.iter().filter(|p| p["stale"] == true).count();
+        println!(
+            "  sync {}: {} peer(s), {} stale",
+            theory["theory"].as_str().unwrap_or("?"),
+            peers.len(),
+            stale,
+        );
+        for p in peers {
+            let flag = if p["stale"] == true { "stale" } else { "ok" };
+            let when = p["last_sync_ok"].as_str().unwrap_or("never");
+            let err = p["last_error"]
+                .as_str()
+                .map(|e| format!("  last-error: {e}"))
+                .unwrap_or_default();
+            println!(
+                "    {flag:<5} {}  last-ok {when}{err}",
+                p["peer"].as_str().unwrap_or("?"),
+            );
         }
     }
 }
