@@ -242,6 +242,47 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #17: executable documentation fixture for defeater polarity. A
+/// correct-polarity defeater `(except d p (not q))` blocks q (+d → not
+/// provable) without deriving `(not q)`; the wrong-polarity `(except d p q)`
+/// leaves q untouched. Mirrors docs/concepts/Defeasible Logic.md.
+#[test]
+fn defeater_polarity_docs_fixture() {
+    // Correct polarity: the defeater's head is the complement (not q).
+    let e = Env::new();
+    e.ok(&["assert", "(given p)", "-t", "release"]);
+    e.ok(&["assert", "(normally r p q)", "-t", "release"]);
+    assert_eq!(
+        tag_of(&e.json(&["status", "-t", "release"]), "q").as_deref(),
+        Some("+d"),
+        "q is derived before the defeater"
+    );
+
+    e.ok(&["assert", "(except d p (not q))", "-t", "release"]);
+    let after = e.json(&["status", "-t", "release"]);
+    assert_ne!(
+        tag_of(&after, "q").as_deref(),
+        Some("+d"),
+        "correct-polarity defeater must block q: {after}"
+    );
+    // The defeater attacks but never establishes its head.
+    assert!(
+        !matches!(tag_of(&after, "(not (q))").as_deref(), Some("+d") | Some("+D")),
+        "defeater must not derive (not q): {after}"
+    );
+
+    // Wrong polarity (positive head) is inert for blocking q — the contrast.
+    let e2 = Env::new();
+    e2.ok(&["assert", "(given p)", "-t", "release"]);
+    e2.ok(&["assert", "(normally r p q)", "-t", "release"]);
+    e2.ok(&["assert", "(except d p q)", "-t", "release"]);
+    assert_eq!(
+        tag_of(&e2.json(&["status", "-t", "release"]), "q").as_deref(),
+        Some("+d"),
+        "a positive-head defeater does not block q"
+    );
+}
+
 /// #16: require returns only *verified* fact sets — every solution actually
 /// makes the goal provable under what-if semantics — never a raw
 /// body-satisfaction candidate that a defeater still blocks.
