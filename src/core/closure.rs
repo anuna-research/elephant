@@ -383,6 +383,26 @@ fn explicit_rule_label(payload: &str) -> Option<String> {
     None
 }
 
+/// Render a literal for display and for pasting back into a query command.
+/// `to_spl` already emits the single `(not …)` wrapper for a negated literal,
+/// so a negated form is returned verbatim — the inner parens are load-bearing.
+/// A positive literal has its outer parens stripped for readability; the
+/// flat-form `(given <atom> <args…>)` sugar still accepts the result, so the
+/// query commands round-trip it. Shared by `status`, `trace`, and the closure
+/// fingerprint so the display form the fingerprint hashes cannot drift from the
+/// one `status --json` prints (#20).
+pub fn literal_display(l: &spindle_core::literal::Literal) -> String {
+    let spl = l.to_spl();
+    if l.negation {
+        spl
+    } else {
+        spl.strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .map(str::to_string)
+            .unwrap_or(spl)
+    }
+}
+
 /// Canonical `to_spl` rendering of a literal given as user text
 /// ("release-ready" → "(release-ready)"), via the single SPL recogniser.
 pub fn normalize_literal(text: &str) -> Option<String> {
@@ -400,6 +420,57 @@ pub fn presentable(conclusions: &[Conclusion]) -> impl Iterator<Item = &Conclusi
 
 pub fn tag_of(c: &ConclusionType) -> &'static str {
     c.symbol()
+}
+
+/// Version of the canonical proof-state mapping (#26). Bumped only if a name,
+/// `positive`, or `level` value changes for an existing tag; adding fields is
+/// backwards-compatible and does not bump it.
+pub const PROOF_STATE_MAP_VERSION: u32 = 1;
+
+/// The plain-language reading of a spindle proof tag (#26).
+pub struct ProofState {
+    /// Canonical snake_case name — the engine's own `ConclusionType` variant,
+    /// lower-cased. Authoritative, not a paraphrase.
+    pub name: &'static str,
+    /// Whether the literal is (definitely or defeasibly) provable.
+    pub positive: bool,
+    /// Proof strength: `definite` (strict) or `defeasible`.
+    pub level: &'static str,
+}
+
+/// Canonical, versioned reading of a compact `+D/+d/-D/-d` tag (#26).
+///
+/// The compact symbols are expert shorthand; in the grounded run they were
+/// paraphrased inconsistently (strict, blocked, refuted, not provable…), and a
+/// single prose gloss for a negative tag hid *why* it was negative. This is the
+/// one authoritative mapping, shared by every command that reports a tag so API
+/// clients never have to invent their own. `reason_class` (complement proved
+/// vs. ambiguity vs. missing support) is a separate, best-effort diagnostic —
+/// see `why-not` — and is deliberately not folded in here, because it is not
+/// cheaply derivable from the tag alone.
+pub fn proof_state(t: ConclusionType) -> ProofState {
+    match t {
+        ConclusionType::DefinitelyProvable => ProofState {
+            name: "definitely_provable",
+            positive: true,
+            level: "definite",
+        },
+        ConclusionType::DefeasiblyProvable => ProofState {
+            name: "defeasibly_provable",
+            positive: true,
+            level: "defeasible",
+        },
+        ConclusionType::DefinitelyNotProvable => ProofState {
+            name: "definitely_not_provable",
+            positive: false,
+            level: "definite",
+        },
+        ConclusionType::DefeasiblyNotProvable => ProofState {
+            name: "defeasibly_not_provable",
+            positive: false,
+            level: "defeasible",
+        },
+    }
 }
 
 #[cfg(test)]

@@ -49,6 +49,7 @@ async fn happy_path_join_and_sync() {
         json: true,
         theory: Some(theory_id.clone()),
         at: None,
+        verbose: 0,
     };
     elephant::cli::append_asserts(&ctx, &["(given qa-signed)".to_string()]).unwrap();
     drop(store);
@@ -116,6 +117,7 @@ async fn happy_path_join_and_sync() {
         json: true,
         theory: Some(theory_id.clone()),
         at: None,
+        verbose: 0,
     };
     let view = elephant::queries::view(&bob_ctx).unwrap();
     let holds: Vec<String> = elephant::queries::conclusions_positive(&view)

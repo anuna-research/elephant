@@ -71,6 +71,7 @@ fn build_and_close(order: &[usize]) -> Vec<(String, String)> {
         json: true,
         theory: Some(store.theory_id.clone()),
         at: Some("2026-07-13T00:00:00Z".into()),
+        verbose: 0,
     };
     let view = elephant::queries::view(&ctx).unwrap();
     let mut tags: Vec<(String, String)> =

@@ -6,4 +6,5 @@
 pub mod closure;
 pub mod dialect;
 pub mod envelope;
+pub mod fingerprint;
 pub mod vocab;

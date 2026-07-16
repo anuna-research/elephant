@@ -121,7 +121,13 @@ pub enum Command {
         /// Show trust-weighted degrees and thresholds
         #[arg(long)]
         trust: bool,
+        /// Also emit the canonical semantic closure fingerprint (#20)
+        #[arg(long)]
+        fingerprint: bool,
     },
+    /// Semantic closure fingerprint & replica comparison (#20)
+    #[command(subcommand)]
+    Closure(ClosureCmd),
     /// Derivation of a provable literal
     Explain { literal: String },
     /// Why a literal is not provable
@@ -162,7 +168,12 @@ pub enum Command {
     /// Example: elephant -t release show s-322fd6e1474dda9e
     Show { sentence_id: String },
     /// The full journal — every entry, including quarantined
-    Log,
+    ///
+    /// Filters compose with AND semantics (#22); an empty match is a valid
+    /// empty result, not an error.
+    ///
+    /// Example: elephant -t release log --status active --performative assert
+    Log(LogFilter),
     /// Stream tag changes for a literal
     ///
     /// Prints one line whenever the literal's proof tag changes (e.g. -d →
@@ -235,6 +246,15 @@ pub enum TheoryCmd {
     },
     /// List members (closure-derived roster)
     Members { theory: String },
+    /// Active/retracted/retraction accounting for a theory (#22)
+    ///
+    /// `theory list` shows a single journal total that is easy to misread as a
+    /// count of active statements. `inspect` breaks it down — active vs.
+    /// retracted assertions, retraction entries, and setup (meta/member) vs.
+    /// content assertions — from the same status semantics `log` uses.
+    ///
+    /// Example: elephant theory inspect rootclaim-grounded --json
+    Inspect { theory: String },
     /// Remove a member (steward only): MLS-remove + rotate the corpus key
     Remove {
         theory: String,
@@ -242,6 +262,38 @@ pub enum TheoryCmd {
         /// Skip the confirmation prompt (required in non-interactive use)
         #[arg(long)]
         force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ClosureCmd {
+    /// Compute the canonical semantic closure fingerprint of a theory
+    ///
+    /// A versioned digest of every non-membership conclusion's proof tag. It is
+    /// independent of journal merge order, JSON conclusion order, and identity:
+    /// two replicas that reached the same closure fingerprint the same, and a
+    /// single changed proof tag changes the digest. Membership, local aliases,
+    /// theory ids, signers, and timestamps are excluded by the documented
+    /// default (see `--json`).
+    ///
+    /// Example: elephant -t rootclaim-grounded closure fingerprint
+    Fingerprint {
+        /// Include the canonical `{tag} {literal}` sequence in the output
+        #[arg(long)]
+        sequence: bool,
+    },
+    /// Compare two `status --json` artefacts for semantic convergence
+    ///
+    /// Recomputes each file's closure fingerprint from its conclusions and
+    /// reports whether they match. Exit 0 on match, 10 on a clean mismatch,
+    /// and the usual non-zero codes on a read/parse failure.
+    ///
+    /// Example: elephant closure compare status-a.json status-b.json
+    Compare {
+        /// First `status --json` file
+        a: std::path::PathBuf,
+        /// Second `status --json` file
+        b: std::path::PathBuf,
     },
 }
 
@@ -255,6 +307,79 @@ pub enum DaemonCmd {
     Status,
     /// Stop a running daemon
     Stop,
+}
+
+/// Journal entry status, as a closed set (#22). A typo like `--status activ`
+/// is rejected at parse time rather than succeeding with an empty, ambiguous
+/// result.
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
+#[value(rename_all = "lowercase")]
+pub enum LogStatus {
+    Active,
+    Retracted,
+    Shadowed,
+    Quarantined,
+}
+
+impl LogStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogStatus::Active => "active",
+            LogStatus::Retracted => "retracted",
+            LogStatus::Shadowed => "shadowed",
+            LogStatus::Quarantined => "quarantined",
+        }
+    }
+}
+
+/// Speech-act performative, as a closed set (#22) — the values
+/// `SpeechAct::performative()` emits.
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
+#[value(rename_all = "lowercase")]
+pub enum LogPerformative {
+    Assert,
+    Retract,
+    Commit,
+    Request,
+    Concede,
+    Query,
+    Justify,
+}
+
+impl LogPerformative {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogPerformative::Assert => "assert",
+            LogPerformative::Retract => "retract",
+            LogPerformative::Commit => "commit",
+            LogPerformative::Request => "request",
+            LogPerformative::Concede => "concede",
+            LogPerformative::Query => "query",
+            LogPerformative::Justify => "justify",
+        }
+    }
+}
+
+/// `log` filters (#22). Each present filter must match (AND); absent filters
+/// are unconstrained. A journal is deterministic after merge/restart, so the
+/// filtered view is too.
+#[derive(Args, Default)]
+pub struct LogFilter {
+    /// Entry status (closed set)
+    #[arg(long, value_enum)]
+    pub status: Option<LogStatus>,
+    /// Speech act (closed set)
+    #[arg(long, value_enum)]
+    pub performative: Option<LogPerformative>,
+    /// Signer DID (exact)
+    #[arg(long)]
+    pub signer: Option<String>,
+    /// Sentence-id or stable entry-id (matches either)
+    #[arg(long)]
+    pub sid: Option<String>,
+    /// Retraction target: keep only retracts whose target is this sentence-id
+    #[arg(long)]
+    pub retracts: Option<String>,
 }
 
 #[derive(Args)]
@@ -347,14 +472,25 @@ pub struct Ctx {
     pub json: bool,
     pub theory: Option<String>,
     pub at: Option<String>,
+    /// Global `-v` count. In text mode, ≥1 opts reads into a more detailed
+    /// rendering (e.g. status showing the canonical proof-state name — #26).
+    pub verbose: u8,
 }
 
 fn dispatch(cli: Cli) -> AppResult<()> {
+    // `closure compare` is fully offline — two self-contained `status --json`
+    // files, no store — so route it before resolving a home. Otherwise a
+    // machine with no `ELEPHANT_HOME`/`HOME` fails in `Paths::resolve()` (exit
+    // 2) even when both absolute input files are perfectly readable (#20 review).
+    if let Command::Closure(ClosureCmd::Compare { a, b }) = &cli.command {
+        return crate::queries::closure_compare(cli.json, a, b);
+    }
     let ctx = Ctx {
         paths: crate::paths::Paths::resolve()?,
         json: cli.json,
         theory: cli.theory,
         at: cli.at,
+        verbose: cli.verbose,
     };
     // Arms are wired as IMPL-001 tasks land; anything unwired is NYI.
     match cli.command {
@@ -379,14 +515,22 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         } => produce_concede(&ctx, &literal, &in_reply_to),
         Command::Define(args) => produce_define(&ctx, &args),
         Command::Vocab => crate::queries::vocab(&ctx),
-        Command::Status { trust } => crate::queries::status(&ctx, trust),
+        Command::Status { trust, fingerprint } => crate::queries::status(&ctx, trust, fingerprint),
+        Command::Closure(cmd) => match cmd {
+            ClosureCmd::Fingerprint { sequence } => {
+                crate::queries::closure_fingerprint(&ctx, sequence)
+            }
+            // Routed offline before store resolution (see top of dispatch);
+            // this arm stays wired as the in-context fallback.
+            ClosureCmd::Compare { a, b } => crate::queries::closure_compare(ctx.json, &a, &b),
+        },
         Command::Explain { literal } => crate::queries::explain(&ctx, &literal),
         Command::WhyNot { literal } => crate::queries::why_not(&ctx, &literal),
         Command::Require { literal } => crate::queries::require(&ctx, &literal),
         Command::WhatIf { facts_then_goal } => crate::queries::what_if(&ctx, &facts_then_goal),
         Command::Commitments => crate::queries::commitments(&ctx),
         Command::Show { sentence_id } => crate::queries::show(&ctx, &sentence_id),
-        Command::Log => crate::queries::log(&ctx),
+        Command::Log(filter) => crate::queries::log(&ctx, &filter),
         Command::Describe { labels } => crate::queries::describe(&ctx, &labels),
         Command::Trace => crate::queries::trace(&ctx),
         Command::Dag { focus } => crate::dag::dag(&ctx, focus.as_deref()),
@@ -959,6 +1103,7 @@ fn handle_theory(ctx: &Ctx, cmd: TheoryCmd) -> AppResult<()> {
             crate::p2p::run::join_theory(ctx, code.as_deref(), alias.as_deref())
         }
         TheoryCmd::Members { theory } => crate::p2p::run::members(ctx, &theory),
+        TheoryCmd::Inspect { theory } => crate::queries::theory_inspect(ctx, &theory),
         TheoryCmd::Remove { theory, did, force } => {
             refuse_at_on_write(ctx, "theory remove")?;
             confirm_removal(&theory, &did, force)?;
@@ -1037,9 +1182,9 @@ fn handle_info(ctx: &Ctx) -> AppResult<()> {
     if ctx.json {
         let items: Vec<_> = theories
             .iter()
-            .map(|(m, n)| {
-                serde_json::json!({"theory": m.theory_id, "alias": m.alias, "entries": n})
-            })
+            .map(
+                |(m, n)| serde_json::json!({"theory": m.theory_id, "alias": m.alias, "entries": n}),
+            )
             .collect();
         println!(
             "{}",
