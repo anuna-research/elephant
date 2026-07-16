@@ -51,7 +51,10 @@ impl Paths {
     /// Durable state there (`create`, `assert`, `join`) is silently lost on
     /// reboot, and nothing else signals it (#8).
     pub fn is_ephemeral(&self) -> bool {
-        ["/tmp/", "/private/tmp/", "/var/tmp/"]
+        // `/var/folders/…` is the macOS per-user `TMPDIR` — where `mktemp -d`
+        // and most temp homes actually land — and it is cleared, so it belongs
+        // with the world-writable ephemeral roots.
+        ["/tmp/", "/private/tmp/", "/var/tmp/", "/var/folders/"]
             .iter()
             .any(|root| self.home.starts_with(root))
     }

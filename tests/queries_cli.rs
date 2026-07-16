@@ -392,6 +392,18 @@ fn log_retracts_are_addressable() {
         .find(|x| x["sid"].as_str() == Some(sid1.as_str()))
         .unwrap();
     assert_eq!(assert1["entry_id"].as_str(), Some(sid1.as_str()));
+
+    // The entry_id `log` advertises for a retract is inspectable via `show`
+    // (retracts carry no sid, so this is the only way to address them).
+    let retract_id = entries
+        .iter()
+        .find(|x| x["performative"] == "retract")
+        .and_then(|x| x["entry_id"].as_str())
+        .unwrap()
+        .to_string();
+    let shown = e.json(&["show", &retract_id, "-t", "release"]);
+    assert_eq!(shown["performative"], "retract");
+    assert!(shown["retracts"].as_str().is_some(), "show resolves a retract by entry_id: {shown}");
 }
 
 /// #13: explain on a blocked literal is a self-describing stub, not a bare

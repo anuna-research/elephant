@@ -256,15 +256,39 @@ fn doc_of<'a>(vv: &'a crate::core::vocab::VocabView, l: &Literal) -> Option<&'a 
 /// conflict gets a precise explanation rather than a "diagnostics gap"
 /// fallthrough. `None` when no opposer concludes the complement (a genuine
 /// diagnostics gap, which stays `undetermined`).
-fn ambiguity_opposers(
-    theory: &spindle_core::theory::Theory,
-    rule_label: &str,
-) -> Option<(Literal, Vec<String>)> {
+fn ambiguity_opposers(closure: &Closure, rule_label: &str) -> Option<(Literal, Vec<String>)> {
+    let theory = &closure.theory;
     let complement = theory.get_rule(rule_label)?.head_literal().complement();
     let comp_spl = complement.to_spl();
+
+    // Cite only *applicable* opposers. Spindle's `undetermined` is ambiguous
+    // between a genuine mutual block and a diagnostics gap, so a rule whose
+    // head merely matches the complement is not enough: if any of its body
+    // literals has no support at all (not positively concluded, not the head
+    // of any rule/fact) the opposer is inert and citing it would assert a
+    // mutual block that does not exist. A body literal that IS concluded or
+    // IS some rule's head has live — if itself contested — support, which is
+    // exactly the standing of a real ambiguity participant.
+    let positively_concluded: std::collections::HashSet<String> = closure
+        .conclusions
+        .iter()
+        .filter(|c| c.conclusion_type.is_positive())
+        .map(|c| c.literal.to_spl())
+        .collect();
+    let rule_heads: std::collections::HashSet<String> =
+        theory.rules().map(|r| r.head_literal().to_spl()).collect();
+    let has_support =
+        |spl: &str| positively_concluded.contains(spl) || rule_heads.contains(spl);
+
     let mut opposers: Vec<String> = theory
         .rules()
         .filter(|r| r.label != rule_label && r.head_literal().to_spl() == comp_spl)
+        .filter(|r| {
+            r.body
+                .iter()
+                .filter_map(|bl| bl.as_logic().map(|l| l.to_literal()))
+                .all(|l| has_support(&l.to_spl()))
+        })
         .map(|r| r.template_label().to_string())
         .collect();
     opposers.sort();
@@ -292,8 +316,7 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
                     "explanation": b.explanation,
                 });
                 if b.blocking_type == BlockingType::Undetermined
-                    && let Some((opp, opposers)) =
-                        ambiguity_opposers(&v.closure.theory, &b.rule_label)
+                    && let Some((opp, opposers)) = ambiguity_opposers(&v.closure, &b.rule_label)
                 {
                     let head = v
                         .closure
@@ -333,7 +356,7 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
         for b in &r.blocked_by {
             // Upgrade the diagnostics-gap fallback to a named ambiguity block.
             let ambiguity = (b.blocking_type == BlockingType::Undetermined)
-                .then(|| ambiguity_opposers(&v.closure.theory, &b.rule_label))
+                .then(|| ambiguity_opposers(&v.closure, &b.rule_label))
                 .flatten();
             match &ambiguity {
                 Some((opp, opposers)) => println!(
@@ -561,11 +584,22 @@ pub fn commitments(ctx: &Ctx) -> AppResult<()> {
 pub fn show(ctx: &Ctx, sentence_id: &str) -> AppResult<()> {
     use crate::core::envelope::SpeechAct;
     let v = view(ctx)?;
+    // Resolve by the act's own sentence-id, or — for retracts/concedes, which
+    // carry none — by the stable `entry_id` that `log` advertises as their
+    // addressable id (#14). Without the second arm, `show` could not inspect
+    // the very ids `log` hands out for those entries.
     let a = v
         .closure
         .admitted
         .iter()
-        .find(|a| a.sid.as_deref() == Some(sentence_id))
+        .find(|a| {
+            a.sid.as_deref() == Some(sentence_id)
+                || crate::core::envelope::Entry::sentence_id(
+                    &a.entry.theory,
+                    &a.entry.signer,
+                    a.entry.hlc,
+                ) == sentence_id
+        })
         .ok_or_else(|| {
             AppError::NotFound(format!(
                 "no entry with sentence-id {sentence_id} in this theory"
@@ -683,13 +717,15 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
     let mut items: Vec<serde_json::Value> = Vec::new();
     for a in &v.closure.admitted {
         // Every entry gets a stable, individually-addressable `entry_id`
-        // derived from (theory, signer, hlc) — the same derivation the
-        // producer uses for a sentence-id, so for an assert it equals `sid`.
-        // Retracts (and concedes) carry no `sid` of their own, so without
-        // this an order-independent journal fingerprint keyed on `sid`
-        // silently collapses every retract onto `null` (#14).
+        // derived from the entry's own (theory, signer, hlc) — the exact
+        // derivation the producer used for a sentence-id, so for an assert it
+        // equals `sid` (including the genesis entry, whose id is derived under
+        // the sentinel `genesis` theory, not the store id). Retracts (and
+        // concedes) carry no `sid` of their own, so without this an
+        // order-independent journal fingerprint keyed on `sid` silently
+        // collapses every retract onto `null` (#14).
         let entry_id = crate::core::envelope::Entry::sentence_id(
-            &v.store.theory_id,
+            &a.entry.theory,
             &a.entry.signer,
             a.entry.hlc,
         );
@@ -731,8 +767,7 @@ pub fn log(ctx: &Ctx) -> AppResult<()> {
         items.push(item);
     }
     for (e, q) in &v.closure.quarantined {
-        let entry_id =
-            crate::core::envelope::Entry::sentence_id(&v.store.theory_id, &e.signer, e.hlc);
+        let entry_id = crate::core::envelope::Entry::sentence_id(&e.theory, &e.signer, e.hlc);
         items.push(serde_json::json!({
             "sid": null,
             "entry_id": entry_id,
