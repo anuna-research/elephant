@@ -190,9 +190,82 @@ async fn handle_connection(
     Ok(())
 }
 
-/// One dial pass: for each local theory, dial every roster peer (except us)
-/// and run a session. Best-effort — a peer that is offline or unreachable is
-/// logged and skipped, never fatal.
+/// Max concurrent dials in one pass (#18): a large roster must not open an
+/// unbounded number of sockets or spawn unbounded tasks.
+const MAX_CONCURRENT_DIALS: usize = 8;
+
+/// Per-peer dial budget (#18): one unreachable peer waits at most this long,
+/// so it cannot add its full transport timeout to every other peer's cadence.
+const PER_PEER_DIAL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The dial → open → session chain for one peer, collapsed to a single
+/// per-peer outcome (deltas applied, or an error).
+async fn dial_peer(
+    endpoint: &iroh::Endpoint,
+    paths: &Paths,
+    theory: &str,
+    peer_id: iroh::EndpointId,
+) -> AppResult<usize> {
+    let conn = transport::dial_sync(endpoint, peer_id)
+        .await
+        .map_err(|e| AppError::Transport(format!("dial peer: {e}")))?;
+    let (send, recv) = conn
+        .open_bi()
+        .await
+        .map_err(|e| AppError::Transport(format!("open sync stream: {e}")))?;
+    let mut stream = tokio::io::join(recv, send);
+    sync_as_initiator(&mut stream, theory, paths).await
+}
+
+/// Concurrent, bounded dial scheduler (#18). Each `(theory, peer)` in `targets`
+/// is dialled by `dial` on its own task with an independent
+/// [`PER_PEER_DIAL_TIMEOUT`]; at most `concurrency` run at once. `on_result` is
+/// invoked once per target, on this task, as each completes — so an offline
+/// peer in one theory never delays the first attempt for a reachable peer in
+/// another. The `JoinSet` aborts every in-flight dial if this future is dropped
+/// (daemon shutdown cancels the whole sync task).
+///
+/// Generic over the dial operation so the scheduler is exercised deterministically
+/// in tests (one never-completing dial next to an immediately-ready one) without
+/// an iroh endpoint.
+async fn dial_targets<K, F, Fut>(
+    targets: Vec<(String, String, K)>,
+    concurrency: usize,
+    per_dial_timeout: Duration,
+    dial: F,
+    mut on_result: impl FnMut(String, String, Result<usize, String>),
+) where
+    K: Send + 'static,
+    F: Fn(String, String, K) -> Fut + Clone + Send + Sync + 'static,
+    Fut: std::future::Future<Output = AppResult<usize>> + Send + 'static,
+{
+    let sem = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+    let mut set = tokio::task::JoinSet::new();
+    for (theory, pk, key) in targets {
+        let sem = sem.clone();
+        let dial = dial.clone();
+        set.spawn(async move {
+            // Held for the dial's life; bounds concurrent sockets/tasks.
+            let _permit = sem.acquire_owned().await;
+            let outcome = tokio::time::timeout(per_dial_timeout, dial(theory.clone(), pk.clone(), key))
+                .await
+                .map_err(|_| "dial timed out".to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()));
+            (theory, pk, outcome)
+        });
+    }
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((theory, pk, outcome)) => on_result(theory, pk, outcome),
+            Err(e) => tracing::debug!("dial task join error: {e}"),
+        }
+    }
+}
+
+/// One dial pass: snapshot every `(theory, roster-peer)` (except us) and dial
+/// them concurrently with bounded fan-out. Best-effort — an offline or
+/// unreachable peer times out and is recorded, never fatal, and never blocks
+/// other peers (#18).
 async fn dial_once(
     endpoint: &iroh::Endpoint,
     paths: &Paths,
@@ -208,44 +281,46 @@ async fn dial_once(
             return;
         }
     };
+    // Snapshot of due targets: (theory, peer_pk, resolved node id). A malformed
+    // roster pk is skipped here (never a health error).
+    let mut targets: Vec<(String, String, iroh::EndpointId)> = Vec::new();
     for (meta, _) in theories {
         let theory = meta.theory_id;
-        let roster = roster_node_pks(paths, &theory).unwrap_or_default();
-        for pk in roster {
+        for pk in roster_node_pks(paths, &theory).unwrap_or_default() {
             if pk == me {
                 continue;
             }
             let Ok(peer_id) = transport::parse_node_pk(&pk) else {
                 continue;
             };
-            // Collapse the dial → open → session chain to one per-peer
-            // outcome so `daemon status` can report last-sync/last-error per
-            // (theory, peer) (#15) — a dropped QUIC/relay path is otherwise
-            // invisible until fingerprints are compared out-of-band.
-            let outcome: AppResult<usize> = async {
-                let conn = transport::dial_sync(endpoint, peer_id)
-                    .await
-                    .map_err(|e| AppError::Transport(format!("dial peer: {e}")))?;
-                let (send, recv) = conn
-                    .open_bi()
-                    .await
-                    .map_err(|e| AppError::Transport(format!("open sync stream: {e}")))?;
-                let mut stream = tokio::io::join(recv, send);
-                sync_as_initiator(&mut stream, &theory, paths).await
-            }
-            .await;
-            match outcome {
-                Ok(applied) => {
-                    record_ok(health, &theory, &pk, applied);
-                    note_synced(refresh, &theory, applied);
-                }
-                Err(e) => {
-                    tracing::debug!(%theory, %pk, "sync failed: {e}");
-                    record_err(health, &theory, &pk, &e.to_string());
-                }
-            }
+            targets.push((theory.clone(), pk, peer_id));
         }
     }
+
+    let endpoint = endpoint.clone();
+    let paths = paths.clone();
+    let dial = move |theory: String, _pk: String, peer_id: iroh::EndpointId| {
+        let endpoint = endpoint.clone();
+        let paths = paths.clone();
+        async move { dial_peer(&endpoint, &paths, &theory, peer_id).await }
+    };
+    dial_targets(
+        targets,
+        MAX_CONCURRENT_DIALS,
+        PER_PEER_DIAL_TIMEOUT,
+        dial,
+        |theory, pk, outcome| match outcome {
+            Ok(applied) => {
+                record_ok(health, &theory, &pk, applied);
+                note_synced(refresh, &theory, applied);
+            }
+            Err(e) => {
+                tracing::debug!(%theory, %pk, "sync failed: {e}");
+                record_err(health, &theory, &pk, &e);
+            }
+        },
+    )
+    .await;
 }
 
 /// Run continuous sync until `shutdown` fires: bind the durable sync endpoint,
@@ -432,6 +507,46 @@ mod tests {
             let m = h.lock().unwrap();
             assert!(m[&key].last_error.is_none(), "a clean session clears the error");
         }
+    }
+
+    /// #18: the concurrent dial scheduler does not let one hung peer delay a
+    /// reachable one. A never-completing dial and an immediately-ready dial run
+    /// together; the ready peer is recorded first (it completes at once, the
+    /// hung peer only at the per-dial timeout), and the hung peer is recorded
+    /// as a timeout rather than lost.
+    #[tokio::test]
+    async fn dial_scheduler_ready_peer_not_blocked_by_hung_peer() {
+        use std::sync::Mutex;
+        let targets = vec![
+            ("tA".to_string(), "hung".to_string(), ()),
+            ("tB".to_string(), "ready".to_string(), ()),
+        ];
+        let recorded: Arc<Mutex<Vec<(String, Result<usize, String>)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink = recorded.clone();
+        dial_targets(
+            targets,
+            8,
+            Duration::from_millis(150),
+            |_theory, pk, _key: ()| async move {
+                if pk == "hung" {
+                    std::future::pending::<AppResult<usize>>().await
+                } else {
+                    Ok(7)
+                }
+            },
+            move |_theory, pk, outcome| sink.lock().unwrap().push((pk, outcome)),
+        )
+        .await;
+
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(recorded.len(), 2);
+        // Ready peer completes immediately and is recorded first.
+        assert_eq!(recorded[0].0, "ready");
+        assert_eq!(recorded[0].1, Ok(7));
+        // Hung peer is recorded as a timeout, not dropped.
+        assert_eq!(recorded[1].0, "hung");
+        assert_eq!(recorded[1].1, Err("dial timed out".to_string()));
     }
 
     /// REQ-108 over a duplex: an initiator and a roster-gated responder run a
