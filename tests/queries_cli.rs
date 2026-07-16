@@ -242,6 +242,23 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #13: explain on a blocked literal is a self-describing stub, not a bare
+/// `null` that reads like a serialization failure.
+#[test]
+fn explain_blocked_literal_hints_at_why_not() {
+    let e = Env::new();
+    // A rule with an unmet premise: `blocked` is -D, so explain has nothing
+    // to derive.
+    e.ok(&["assert", "(normally r-b missing-fact blocked)", "-t", "release"]);
+    let ex = e.json(&["explain", "blocked", "-t", "release"]);
+    assert!(ex["explanation"].is_null(), "no derivation for a blocked literal");
+    assert_eq!(ex["not_provable"], true, "must flag why the explanation is null: {ex}");
+    assert!(
+        ex["hint"].as_str().unwrap_or_default().contains("why-not"),
+        "must point at why-not: {ex}"
+    );
+}
+
 /// #10: describe --json meta values are plain JSON strings, not Rust Debug
 /// (`String("…")`) wrappers. The --json contract is a stable data interface.
 #[test]

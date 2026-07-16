@@ -173,11 +173,17 @@ pub fn explain(ctx: &Ctx, literal: &str) -> AppResult<()> {
             }
         }
         None => {
+            // A bare `"explanation": null` is indistinguishable from a
+            // serialization failure. Say why it is null (the literal is not
+            // provable, so there is no derivation to explain) and point at the
+            // command that does explain the block (SPEC-001 REQ-011/REQ-012).
             if ctx.json {
                 println!(
                     "{}",
                     serde_json::json!({"v":1, "theory": v.store.theory_id,
-                        "literal": literal, "explanation": null})
+                        "literal": literal, "explanation": null,
+                        "not_provable": true,
+                        "hint": format!("see `elephant why-not {literal}`")})
                 );
             } else {
                 println!("{literal} is not provable — try `elephant why-not {literal}`");
