@@ -385,17 +385,31 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
 // ── require / abduction (REQ-013) ───────────────────────────────────────
 
 pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
+    use spindle_core::query::{
+        DEFAULT_MAX_RAW_CANDIDATES, RequiresOptions, RequiresSearchStatus, requires_with_options,
+    };
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
-    let r = spindle_core::query::abduce(&v.closure.theory, &lit, 8)
-        .map_err(|e| AppError::Reasoner(e.to_string()))?;
+    // Verified abduction (REQ-013, #16): `requires_with_options` injects each
+    // raw candidate and re-reasons, keeping only fact sets that make the goal
+    // positively provable under the same semantics as `what-if`. Raw `abduce`
+    // returned body-satisfaction candidates that an applicable defeater or a
+    // competing rule could still block — a remedy the operator would assert
+    // in vain. `search_status` records whether the search was exhaustive.
+    let r = requires_with_options(
+        &v.closure.theory,
+        &lit,
+        RequiresOptions {
+            max_solutions: 8,
+            max_raw_candidates: DEFAULT_MAX_RAW_CANDIDATES,
+        },
+    )
+    .map_err(|e| AppError::Reasoner(e.to_string()))?;
     let vv = crate::core::vocab::view(&v.closure);
-    let already = r.solutions.iter().any(|s| s.is_already_provable());
-    let open: Vec<&spindle_core::query::AbductionSolution> = r
-        .solutions
-        .iter()
-        .filter(|s| !s.is_already_provable())
-        .collect();
+    let already = r.already_provable;
+    // Every returned solution is already verified and open (an already-provable
+    // goal yields no solutions), so no client-side filtering is needed.
+    let open: Vec<&spindle_core::query::AbductionSolution> = r.solutions.iter().collect();
     let solutions: Vec<Vec<String>> = open
         .iter()
         .map(|s| {
@@ -404,9 +418,16 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
             f
         })
         .collect();
+    let exhaustive = matches!(r.search_status, RequiresSearchStatus::BoundedComplete);
     if ctx.json {
         let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
-            "already_provable": already, "solutions": solutions});
+            "already_provable": already, "solutions": solutions,
+            "search_status": if exhaustive { "bounded-complete" } else { "budget-exhausted" },
+            "verification": {
+                "raw_examined": r.verification.raw_examined,
+                "accepted": r.verification.accepted,
+                "rejected": r.verification.rejected,
+            }});
         let docs = docs_join(&vv, open.iter().flat_map(|s| s.facts.iter()));
         if !docs.is_empty() {
             obj["docs"] = docs.into();
@@ -415,7 +436,14 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
     } else if already {
         println!("{literal} is already provable");
     } else if solutions.is_empty() {
-        println!("no fact set found that would prove {literal} (bounded search)");
+        println!(
+            "no fact set found that would prove {literal} ({})",
+            if exhaustive {
+                "bounded search, exhausted"
+            } else {
+                "search budget reached"
+            }
+        );
     } else {
         println!("provable if all added:");
         for s in &open {
@@ -436,6 +464,9 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
                 f
             };
             println!("  {}", rendered.join("  "));
+        }
+        if !exhaustive {
+            println!("(search budget reached — more solutions may exist)");
         }
     }
     Ok(())

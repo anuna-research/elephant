@@ -242,6 +242,59 @@ fn describe_and_trace_are_flat() {
         .failure();
 }
 
+/// #16: require returns only *verified* fact sets — every solution actually
+/// makes the goal provable under what-if semantics — never a raw
+/// body-satisfaction candidate that a defeater still blocks.
+#[test]
+fn require_returns_only_verified_solutions() {
+    let e = Env::new();
+    // r would derive q from p, but defeater d attacks q whenever p holds.
+    // Adding {p} therefore does NOT make q provable.
+    e.ok(&["assert", "(normally r p q)", "-t", "release"]);
+    e.ok(&["assert", "(except d p (not q))", "-t", "release"]);
+    // A separate clean goal with a genuine missing premise.
+    e.ok(&["assert", "(normally r2 s2 g2)", "-t", "release"]);
+
+    let rq = e.json(&["require", "q", "-t", "release"]);
+    let sols = rq["solutions"].as_array().unwrap();
+    assert!(
+        !sols
+            .iter()
+            .any(|s| s.as_array().unwrap().iter().any(|f| f == "p")),
+        "require must not offer {{p}}: adding p fires the defeater and q stays blocked: {rq}"
+    );
+    assert!(
+        rq["search_status"].as_str().is_some(),
+        "search_status must be serialized: {rq}"
+    );
+    assert!(rq.get("verification").is_some(), "verification counters present: {rq}");
+
+    // Invariant: inject every returned solution (for the clean goal) through
+    // what-if — each must report the goal provable.
+    let rg = e.json(&["require", "g2", "-t", "release"]);
+    let g2_sols = rg["solutions"].as_array().unwrap();
+    assert!(
+        g2_sols.iter().any(|s| s.as_array().unwrap().iter().any(|f| f == "s2")),
+        "require must still propose the genuine missing premise s2: {rg}"
+    );
+    for s in g2_sols {
+        let facts: Vec<String> = s
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap().to_string())
+            .collect();
+        let mut args: Vec<&str> = vec!["what-if"];
+        args.extend(facts.iter().map(String::as_str));
+        args.extend(["g2", "-t", "release"]);
+        let wi = e.json(&args);
+        assert_eq!(
+            wi["provable"], true,
+            "every require solution must make the goal provable: facts={facts:?} → {wi}"
+        );
+    }
+}
+
 /// #12: an un-adjudicated mutual conflict is reported as a first-class
 /// `ambiguity` block naming the opposing rule, not an `undetermined`
 /// diagnostics-gap fallthrough.
