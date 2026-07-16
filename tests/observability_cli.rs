@@ -298,3 +298,94 @@ fn log_filters_compose_with_and() {
     ]);
     assert_eq!(empty["entries"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn invalid_closed_set_filters_are_rejected() {
+    let e = Env::new();
+    // A typo in a closed-set filter must fail at parse time (clap usage error),
+    // not silently produce a zero-match result indistinguishable from a real
+    // empty journal.
+    e.cmd()
+        .args(["log", "-t", "release", "--status", "activ"])
+        .assert()
+        .failure()
+        .code(1);
+    e.cmd()
+        .args(["log", "-t", "release", "--performative", "asssert"])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+#[test]
+fn membership_fact_counts_as_setup() {
+    let e = Env::new();
+    // A membership fact is setup regardless of surface spelling — here the
+    // `(given (member …))` form, which the old prefix check missed.
+    e.ok(&[
+        "assert",
+        "(given (member \"did:crdt:aa\" \"pk\"))",
+        "-t",
+        "release",
+    ]);
+    e.ok(&["assert", "qa-signed", "-t", "release"]);
+    let insp = e.json(&["theory", "inspect", "release"]);
+    // genesis meta + the member fact = 2 setup; qa-signed = 1 content.
+    assert_eq!(insp["setup_assertions"], 2);
+    assert_eq!(insp["content_assertions"], 1);
+}
+
+#[test]
+fn retracted_commit_is_accounted() {
+    let e = Env::new();
+    // A promise (commit) that its signer later retracts must not vanish from
+    // the breakdown, or journal_entries carries an unexplained entry.
+    let out = e
+        .cmd()
+        .args([
+            "promise",
+            "legal-signed",
+            "--by",
+            "2099-01-01T00:00:00Z",
+            "-t",
+            "release",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let sid = serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["receipt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    e.ok(&["retract", &sid, "-t", "release"]);
+
+    let insp = e.json(&["theory", "inspect", "release"]);
+    assert_eq!(
+        insp["other_retracted"], 1,
+        "the retracted commit is counted"
+    );
+    assert_eq!(insp["other_active"], 0);
+    assert_eq!(insp["retractions"], 1);
+    // total = genesis assert + retracted commit + retract = 3, fully explained.
+    assert_eq!(insp["journal_entries"], 3);
+}
+
+#[test]
+fn compare_needs_no_store() {
+    // `closure compare` is offline: two absolute status files, no home. It must
+    // succeed even with every home variable unset.
+    let e = Env::new();
+    seed_penguin(&e);
+    let f1 = e.status_file("a.json");
+    let f2 = e.status_file("b.json");
+    let mut c = Command::cargo_bin("elephant").unwrap();
+    c.env_clear(); // no HOME, XDG_DATA_HOME, or ELEPHANT_HOME
+    c.args([
+        "closure",
+        "compare",
+        f1.to_str().unwrap(),
+        f2.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+}

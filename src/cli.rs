@@ -309,17 +309,68 @@ pub enum DaemonCmd {
     Stop,
 }
 
+/// Journal entry status, as a closed set (#22). A typo like `--status activ`
+/// is rejected at parse time rather than succeeding with an empty, ambiguous
+/// result.
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
+#[value(rename_all = "lowercase")]
+pub enum LogStatus {
+    Active,
+    Retracted,
+    Shadowed,
+    Quarantined,
+}
+
+impl LogStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogStatus::Active => "active",
+            LogStatus::Retracted => "retracted",
+            LogStatus::Shadowed => "shadowed",
+            LogStatus::Quarantined => "quarantined",
+        }
+    }
+}
+
+/// Speech-act performative, as a closed set (#22) — the values
+/// `SpeechAct::performative()` emits.
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
+#[value(rename_all = "lowercase")]
+pub enum LogPerformative {
+    Assert,
+    Retract,
+    Commit,
+    Request,
+    Concede,
+    Query,
+    Justify,
+}
+
+impl LogPerformative {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogPerformative::Assert => "assert",
+            LogPerformative::Retract => "retract",
+            LogPerformative::Commit => "commit",
+            LogPerformative::Request => "request",
+            LogPerformative::Concede => "concede",
+            LogPerformative::Query => "query",
+            LogPerformative::Justify => "justify",
+        }
+    }
+}
+
 /// `log` filters (#22). Each present filter must match (AND); absent filters
 /// are unconstrained. A journal is deterministic after merge/restart, so the
 /// filtered view is too.
 #[derive(Args, Default)]
 pub struct LogFilter {
-    /// active | retracted | shadowed | quarantined
-    #[arg(long)]
-    pub status: Option<String>,
-    /// Speech act: assert | retract | commit | request | concede
-    #[arg(long)]
-    pub performative: Option<String>,
+    /// Entry status (closed set)
+    #[arg(long, value_enum)]
+    pub status: Option<LogStatus>,
+    /// Speech act (closed set)
+    #[arg(long, value_enum)]
+    pub performative: Option<LogPerformative>,
     /// Signer DID (exact)
     #[arg(long)]
     pub signer: Option<String>,
@@ -427,6 +478,13 @@ pub struct Ctx {
 }
 
 fn dispatch(cli: Cli) -> AppResult<()> {
+    // `closure compare` is fully offline — two self-contained `status --json`
+    // files, no store — so route it before resolving a home. Otherwise a
+    // machine with no `ELEPHANT_HOME`/`HOME` fails in `Paths::resolve()` (exit
+    // 2) even when both absolute input files are perfectly readable (#20 review).
+    if let Command::Closure(ClosureCmd::Compare { a, b }) = &cli.command {
+        return crate::queries::closure_compare(cli.json, a, b);
+    }
     let ctx = Ctx {
         paths: crate::paths::Paths::resolve()?,
         json: cli.json,
@@ -462,7 +520,9 @@ fn dispatch(cli: Cli) -> AppResult<()> {
             ClosureCmd::Fingerprint { sequence } => {
                 crate::queries::closure_fingerprint(&ctx, sequence)
             }
-            ClosureCmd::Compare { a, b } => crate::queries::closure_compare(&ctx, &a, &b),
+            // Routed offline before store resolution (see top of dispatch);
+            // this arm stays wired as the in-context fallback.
+            ClosureCmd::Compare { a, b } => crate::queries::closure_compare(ctx.json, &a, &b),
         },
         Command::Explain { literal } => crate::queries::explain(&ctx, &literal),
         Command::WhyNot { literal } => crate::queries::why_not(&ctx, &literal),

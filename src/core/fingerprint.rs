@@ -64,14 +64,27 @@ impl Fingerprint {
 
 /// True for a membership conclusion, which is excluded: it is per-replica
 /// (each replica/identity contributes its own `member` fact) and not part of
-/// the semantic closure being compared. Matches the `status --json` display
-/// form (`member "…" "…"`, outer parens stripped) and, defensively, the raw
-/// `to_spl()` form (`(member …)`).
+/// the semantic closure being compared. Recognises **both polarities** — a
+/// positive `member …` fact and a negated `(not (member …))` conclusion (which
+/// a rule can derive) are equally identity-specific — across the display form
+/// (`member "…" "…"`, outer parens stripped) and the raw `to_spl()` form.
 fn is_member(literal_display: &str) -> bool {
-    literal_display == "member"
-        || literal_display.starts_with("member ")
-        || literal_display.starts_with("(member ")
-        || literal_display.starts_with("(member)")
+    let s = literal_display.trim();
+    // Unwrap a single `(not …)` so a negated membership literal is caught too;
+    // `to_spl()` renders it `(not (member …))`.
+    let inner = s
+        .strip_prefix("(not ")
+        .and_then(|r| r.strip_suffix(')'))
+        .map(str::trim)
+        .unwrap_or(s);
+    is_member_atom(s) || is_member_atom(inner)
+}
+
+fn is_member_atom(s: &str) -> bool {
+    s == "member"
+        || s.starts_with("member ")
+        || s.starts_with("(member ")
+        || s.starts_with("(member)")
 }
 
 /// Compute the fingerprint from `(tag, literal)` pairs, where `literal` is the
@@ -148,18 +161,38 @@ pub fn status_rows(closure: &crate::core::closure::Closure) -> Vec<(String, Stri
 /// Recompute the fingerprint from a saved `status --json` value — the
 /// `conclusions` array of `{tag, literal}` objects. Used by `closure compare`
 /// so two status artefacts can be checked for semantic convergence without a
-/// live daemon. Returns `None` if the value has no `conclusions` array.
-pub fn of_status_json(v: &serde_json::Value) -> Option<Fingerprint> {
-    let arr = v.get("conclusions")?.as_array()?;
-    let pairs: Vec<(String, String)> = arr
-        .iter()
-        .filter_map(|row| {
-            let tag = row.get("tag")?.as_str()?.to_string();
-            let lit = row.get("literal")?.as_str()?.to_string();
-            Some((tag, lit))
-        })
-        .collect();
-    Some(compute(pairs.iter().map(|(t, l)| (t.as_str(), l.as_str()))))
+/// live daemon.
+///
+/// Every row is fully validated before hashing: it **rejects** a `conclusions`
+/// array whose rows lack a string `tag`/`literal` or carry a tag outside the
+/// `+D/+d/-D/-d` set, rather than silently dropping the offending row — a
+/// dropped row would let a malformed file falsely compare equal to a shorter
+/// one (a false convergence result). The `Err` string names the problem for a
+/// caller to surface as a parse error.
+pub fn of_status_json(v: &serde_json::Value) -> Result<Fingerprint, String> {
+    let arr = v
+        .get("conclusions")
+        .and_then(|c| c.as_array())
+        .ok_or_else(|| "no `conclusions` array — is it `status --json` output?".to_string())?;
+    const VALID_TAGS: [&str; 4] = ["+D", "+d", "-D", "-d"];
+    let mut pairs: Vec<(String, String)> = Vec::with_capacity(arr.len());
+    for (i, row) in arr.iter().enumerate() {
+        let tag = row
+            .get("tag")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| format!("conclusion {i} has no string `tag`"))?;
+        let lit = row
+            .get("literal")
+            .and_then(|l| l.as_str())
+            .ok_or_else(|| format!("conclusion {i} has no string `literal`"))?;
+        if !VALID_TAGS.contains(&tag) {
+            return Err(format!(
+                "conclusion {i} has invalid tag {tag:?} (expected one of +D/+d/-D/-d)"
+            ));
+        }
+        pairs.push((tag.to_string(), lit.to_string()));
+    }
+    Ok(compute(pairs.iter().map(|(t, l)| (t.as_str(), l.as_str()))))
 }
 
 /// The fingerprint result as the stable `--json` object (SPEC-001 REQ-024
@@ -201,16 +234,18 @@ mod tests {
     }
 
     #[test]
-    fn members_excluded() {
+    fn members_excluded_both_polarities() {
         let without = compute([("+d", "lab-origin")]);
         let with = compute([
             ("+d", "lab-origin"),
             ("+d", "member \"did:crdt:aa\" \"pk\""),
             ("+d", "(member \"did:crdt:bb\" \"pk\")"),
+            // A negated membership conclusion is equally identity-specific.
+            ("-D", "(not (member \"did:crdt:cc\" \"pk\"))"),
         ]);
         assert_eq!(
             without.digest, with.digest,
-            "membership must not enter the digest"
+            "membership must not enter the digest, either polarity"
         );
         assert_eq!(with.included, 1);
     }
@@ -248,6 +283,26 @@ mod tests {
         });
         let recomputed = of_status_json(&status).expect("has conclusions");
         assert_eq!(live.digest, recomputed.digest);
+    }
+
+    #[test]
+    fn malformed_rows_are_rejected_not_dropped() {
+        // A row missing its `tag` must be an error — dropping it would let this
+        // file falsely compare equal to one holding only the good row.
+        let missing_tag = serde_json::json!({
+            "conclusions": [{"literal": "x", "tag": "+d"}, {"literal": "y"}]
+        });
+        assert!(of_status_json(&missing_tag).is_err());
+        // Missing `literal`, likewise.
+        let missing_lit = serde_json::json!({"conclusions": [{"tag": "+d"}]});
+        assert!(of_status_json(&missing_lit).is_err());
+        // A tag outside the closed set is rejected.
+        let bad_tag = serde_json::json!({
+            "conclusions": [{"literal": "x", "tag": "maybe"}]
+        });
+        assert!(of_status_json(&bad_tag).is_err());
+        // No `conclusions` array at all.
+        assert!(of_status_json(&serde_json::json!({"nope": 1})).is_err());
     }
 
     #[test]

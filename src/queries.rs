@@ -206,25 +206,26 @@ pub fn closure_fingerprint(ctx: &Ctx, with_sequence: bool) -> AppResult<()> {
 /// `elephant closure compare a.json b.json` — recompute each file's closure
 /// fingerprint and report convergence. Exit 0 on match, `Exit::Predicate` (10)
 /// on a clean mismatch, and the ordinary error codes on a read/parse failure.
-/// It does not need a theory or a daemon: the inputs are self-contained
-/// `status --json` artefacts, so replicas (or a replay) can be compared offline.
-pub fn closure_compare(ctx: &Ctx, a: &std::path::Path, b: &std::path::Path) -> AppResult<()> {
+///
+/// Takes only `json` (not a `Ctx`): the inputs are self-contained
+/// `status --json` artefacts, so the comparison is fully offline and needs no
+/// store, theory, or daemon. Dispatch routes it here *before* resolving a home
+/// so it works even when no `ELEPHANT_HOME`/`HOME` is configured (#20 review).
+pub fn closure_compare(json: bool, a: &std::path::Path, b: &std::path::Path) -> AppResult<()> {
     let load = |p: &std::path::Path| -> AppResult<crate::core::fingerprint::Fingerprint> {
         let text = std::fs::read_to_string(p)
             .map_err(|e| AppError::NotFound(format!("cannot read {}: {e}", p.display())))?;
         let val: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| AppError::Parse(format!("{} is not JSON: {e}", p.display())))?;
-        crate::core::fingerprint::of_status_json(&val).ok_or_else(|| {
-            AppError::Parse(format!(
-                "{} has no `conclusions` array — is it `status --json` output?",
-                p.display()
-            ))
-        })
+        // A malformed row is a parse error, not a silently-shorter closure —
+        // otherwise a bad file could falsely compare equal (false convergence).
+        crate::core::fingerprint::of_status_json(&val)
+            .map_err(|why| AppError::Parse(format!("{}: {why}", p.display())))
     };
     let fa = load(a)?;
     let fb = load(b)?;
     let matched = fa.digest == fb.digest;
-    if ctx.json {
+    if json {
         println!(
             "{}",
             serde_json::json!({
@@ -991,18 +992,18 @@ fn apply_log_filter(items: &mut Vec<serde_json::Value>, f: &crate::cli::LogFilte
     items.retain(|i| {
         // `--status quarantined` matches the `quarantined: <reason>` prefix;
         // every other status is an exact match.
-        if let Some(want) = &f.status {
+        if let Some(want) = f.status {
             let got = i["status"].as_str().unwrap_or("");
-            let ok = if want == "quarantined" {
+            let ok = if want == crate::cli::LogStatus::Quarantined {
                 got.starts_with("quarantined")
             } else {
-                got == want
+                got == want.as_str()
             };
             if !ok {
                 return false;
             }
         }
-        if let Some(want) = &f.performative
+        if let Some(want) = f.performative
             && i["performative"].as_str() != Some(want.as_str())
         {
             return false;
@@ -1031,15 +1032,34 @@ fn apply_log_filter(items: &mut Vec<serde_json::Value>, f: &crate::cli::LogFilte
 
 // ── theory inspect: journal accounting (#22) ────────────────────────────
 
-/// Whether an active assert is *setup* (theory meta or a membership fact)
-/// rather than *content*. The rule is explicit, not a guess: `(meta …)` and
-/// `(given (member …))` are setup; everything else is content.
+/// Whether an active assert is *setup* (theory/predicate meta or a membership
+/// fact) rather than *content*. Classified from the parsed SPL, never its
+/// surface spelling: `member "did" "pk"`, `(member "did" "pk")`,
+/// `(given (member …))`, and whitespace variants all parse to the same
+/// membership literal, and a `(meta …)`/`(predicate …)` declaration is meta in
+/// any spelling. Returns `false` for anything that fails to parse — an active
+/// admitted assert already parsed at closure time, so that path is unreachable
+/// for real inputs and simply declines to reclassify on the impossible one.
 fn is_setup_assert(spl: &str) -> bool {
-    let t = spl.trim_start();
-    t.starts_with("(meta ") || t.starts_with("(meta(") || {
-        let inner = t.trim_start_matches("(given").trim_start();
-        inner.starts_with("(member ") || inner.starts_with("(member(")
+    let Ok(t) = spindle_parser::parse_spl(spl) else {
+        return false;
+    };
+    // Any meta/predicate documentation (genesis `(meta theory …)`, predicate
+    // docs, predicate declarations) is setup.
+    if !t.metadata().is_empty()
+        || !t.predicate_metadata().is_empty()
+        || !t.predicate_declarations().is_empty()
+    {
+        return true;
     }
+    // A membership fact `(member …)`, either polarity, is setup.
+    t.rules().any(|r| {
+        r.is_fact()
+            && r.head
+                .first()
+                .map(|l| l.name() == "member")
+                .unwrap_or(false)
+    })
 }
 
 /// `elephant theory inspect <theory>` — active/retracted/retraction accounting
@@ -1057,7 +1077,10 @@ pub fn theory_inspect(ctx: &Ctx, theory: &str) -> AppResult<()> {
     let v = view(&sub)?;
     let (mut active_assertions, mut retracted_assertions, mut shadowed_assertions) = (0u64, 0, 0);
     let (mut retractions, mut setup_assertions) = (0u64, 0);
-    let mut other_active = 0u64; // active non-assert acts (commit/request/concede)
+    // Non-assert speech acts (commit/request/concede/query/justify), split by
+    // whether their own signer later retracted them — otherwise a retracted
+    // commit is an unexplained entry in the total.
+    let (mut other_active, mut other_retracted) = (0u64, 0);
     for a in &v.closure.admitted {
         match &a.act {
             SpeechAct::Assert { spl, .. } => {
@@ -1073,15 +1096,16 @@ pub fn theory_inspect(ctx: &Ctx, theory: &str) -> AppResult<()> {
                 }
             }
             SpeechAct::Retract { .. } => retractions += 1,
-            _ => {
-                if !a.retracted {
-                    other_active += 1;
-                }
-            }
+            _ if a.retracted => other_retracted += 1,
+            _ => other_active += 1,
         }
     }
+    // `theory list` counts entries + malformed; mirror it so the total agrees.
+    // Malformed elements (unreadable/non-string/invalid sealed) never enter the
+    // closure, so they must be counted separately from admitted/quarantined.
+    let malformed = v.store.entries().1.len() as u64;
     let quarantined = v.closure.quarantined.len() as u64;
-    let journal_entries = v.closure.admitted.len() as u64 + quarantined;
+    let journal_entries = v.closure.admitted.len() as u64 + quarantined + malformed;
     let content_assertions = active_assertions - setup_assertions;
 
     if ctx.json {
@@ -1098,7 +1122,9 @@ pub fn theory_inspect(ctx: &Ctx, theory: &str) -> AppResult<()> {
                 "retractions": retractions,
                 "shadowed_assertions": shadowed_assertions,
                 "other_active": other_active,
+                "other_retracted": other_retracted,
                 "quarantined": quarantined,
+                "malformed": malformed,
             })
         );
     } else {
@@ -1114,8 +1140,14 @@ pub fn theory_inspect(ctx: &Ctx, theory: &str) -> AppResult<()> {
         if other_active > 0 {
             println!("other active acts     {other_active:>4}");
         }
+        if other_retracted > 0 {
+            println!("retracted other acts  {other_retracted:>4}");
+        }
         if quarantined > 0 {
             println!("quarantined           {quarantined:>4}");
+        }
+        if malformed > 0 {
+            println!("malformed             {malformed:>4}");
         }
     }
     Ok(())
