@@ -418,6 +418,9 @@ mod tests {
     use crate::core::envelope::{Entry, SpeechAct};
     use crate::e2ee::{self, MlsIdentity};
 
+    /// Records `(peer, dial outcome)` pairs captured by a dial-scheduler sink.
+    type DialOutcomes = std::sync::Arc<std::sync::Mutex<Vec<(String, Result<usize, String>)>>>;
+
     struct Node {
         _dir: tempfile::TempDir,
         paths: Paths,
@@ -528,8 +531,7 @@ mod tests {
             ("tA".to_string(), "hung".to_string(), ()),
             ("tB".to_string(), "ready".to_string(), ()),
         ];
-        let recorded: Arc<Mutex<Vec<(String, Result<usize, String>)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let recorded: DialOutcomes = Arc::new(Mutex::new(Vec::new()));
         let sink = recorded.clone();
         dial_targets(
             targets,
