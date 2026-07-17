@@ -50,7 +50,7 @@ variables:
   # cloned to the sibling path its `../<name>` path dep resolves to.
   - &clone_siblings |
     CBCL_RS_REF=1c6fa8f581a69a7bcb88fb787fa37c81f5de4221
-    SPINDLE_RUST_REF=9764180288fc647084db77bcec9b73708d40f851
+    SPINDLE_RUST_REF=e980c9e998fe7cbca5a3f0465cc4cba2fa90d190
     DID_CRDT_REF=adb5c7ac1423173f00201cddffa60fe672fb2a53
     if [ ! -d ../cbcl-rs ]; then
       git clone https://codeberg.org/anuna/cbcl-rs.git ../cbcl-rs
