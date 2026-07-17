@@ -544,6 +544,7 @@ version = "0.1.0"
 dependencies = [
  "hashbrown 0.15.5",
  "serde",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -1394,7 +1395,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "elephant"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "assert_cmd",
  "async-stream",
