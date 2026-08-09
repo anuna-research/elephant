@@ -1,8 +1,8 @@
 ---
 id: SPEC-006
 title: elephant next — theory-derived task discovery
-version: 0.2.0
-status: draft
+version: 0.3.0
+status: implemented
 date: 2026-08-09
 audience: agent, human reviewer
 ---
@@ -134,17 +134,16 @@ recommends. It is not identified by a hyphen suffix on an atom name. For a
 task identifier `X`, a candidate author supplies these forms:
 
 ```lisp
-; Declared once per theory, with predicate-symbol documentation.
-(predicate task ((id symbol))
-           (description "an available unit of work") (kind marker))
-(predicate ready ((id symbol))
-           (description "task ?x may be taken now") (kind conclusion))
-(predicate completed ((id symbol))
-           (description "task ?x is finished") (kind conclusion))
+; task, ready and completed are RESERVED built-in control vocabulary
+; (SPEC-005 REQ-404) at every arity. They are neither declared nor
+; declarable here — `define task/1` is refused at the wire. The
+; convention consumes the built-in families rather than coining rivals.
+
+; Only the coined documentation predicates are declared.
 (predicate task-description ((id symbol) (text symbol))
-           (description "prose statement of the work for ?x") (kind doc))
+           (description "prose statement of the work for ?x") (kind state))
 (predicate task-acceptance ((id symbol) (text symbol))
-           (description "governing acceptance criterion for ?x") (kind doc))
+           (description "governing acceptance criterion for ?x") (kind state))
 
 ; Per task — the identifier is an argument, never part of a functor.
 (given (task models))
@@ -157,7 +156,19 @@ task identifier `X`, a candidate author supplies these forms:
 (meta r-ready (source "SPEC-006-elephant-next#TEST-601"))
 ```
 
-Three consequences follow, and they are the substance of this convention.
+`kind` values are constrained by [[SPEC-005-elephant-vocabulary#CON-401]] to
+`evidence`, `state`, or `discovery`; `control` is built-in only. The
+documentation predicates take `state`, being stable properties of a task
+rather than evidence of a condition or a discovery.
+
+Four consequences follow, and they are the substance of this convention.
+
+**The task vocabulary is already reserved.** Because `task`, `ready`, and
+`completed` are built-in control families, a theory cannot coin a rival
+spelling of them, and `next` needs no declaration to recognise them. The
+built-in registry describes `task` as a "declared unit of work (legacy hence
+lifecycle)" — this specification gives that reserved vocabulary a live
+consumer again, at predicate arity rather than as a flat atom.
 
 **One rule, not one rule per task.** `r-ready` is a single quantified rule
 whose instances spindle grounds per binding of `?x`. A theory with forty tasks
@@ -207,6 +218,23 @@ For the task identifiers this projection recognises — arg 0 is a
 and spindle `Literal` equality coincide, so no separate comparison path is
 introduced. They can diverge only for numeric argument terms, which
 [[SPEC-006-elephant-next#CON-601]] already excludes from the convention.
+
+Only an **unqualified** literal counts. A modal or temporally-bounded
+conclusion — `(must (ready X))`, `(during (ready X) …)` — SHALL NOT satisfy
+the readiness condition. Spindle carries `Mode` and `Temporal` alongside the
+predicate name, so such a literal reports name `ready` at arity 1 while the
+theory does not derive `(ready X)`; admitting it would emit a `ready_literal`
+the reasoner cannot prove and a [[SPEC-006-elephant-next#REQ-605]] receipt
+that contradicts its own candidate.
+
+Every literal the command renders or compares SHALL be produced through
+spindle's `Literal` and its canonical `to_spl()`. The command SHALL NOT build
+one by interpolating a task identifier into a string. A task identifier is any
+`Term::Symbol`, including a quoted symbol containing spaces, parentheses, or
+quotes; `"(completed " + X + ")"` renders `my task` as the two-argument
+literal `(completed my task)`, silently changing the predicate symbol so an
+outstanding commitment stops matching and the emitted operand names a literal
+the theory never derives.
 
 The command does not infer readiness from file position, source order, agent
 identity, an assignment literal, or an unproved rule head.
@@ -271,12 +299,23 @@ argument and SHALL NOT treat the multiplicity as an error. Documentation is
 inert, so a duplicate is an authoring wart rather than a contradiction, and a
 deterministic choice keeps [[SPEC-006-elephant-next#NFR-601]] satisfiable.
 
+A rule's resolved `source` SHALL NOT satisfy this gate when its value is an
+envelope-derived agent atom — the `agent:` prefix reserved by
+[[SPEC-001-elephant-core#ADR-012]]. Every claims-wrapped assert has that
+provenance attached automatically, so without this exclusion the readiness
+source is never absent, `missing-ready-source` is unreachable through the
+producer path, and `next` reports *who* asserted the rule as though it were
+the citation for *why* the work is ready. Likewise a list-valued `source` is
+well-formed metadata but not a single citation, and SHALL be treated as
+absent rather than resolved to an arbitrary element.
+
 Trace:
 
 - [[SPEC-006-elephant-next#CON-601]]
 - [[SPEC-006-elephant-next#TEST-603]]
 - [[SPEC-006-elephant-next#TEST-604]]
 - [[SPEC-006-elephant-next#TEST-610]]
+- [[SPEC-006-elephant-next#TEST-612]]
 - [[SPEC-006-elephant-next#OBS-601]]
 
 ### REQ-605: Proof and Provenance Receipt
@@ -288,10 +327,22 @@ also include token arrays that invoke the existing `promise`, `explain`, and
 
 The emitted rule label SHALL be the **template** label. Spindle names a
 grounded instance of a quantified rule `{template}_{n}`; only the template
-carries metadata, so `next` SHALL strip a trailing `_<digits>` run from the
-conclusion's rule label before reporting it or emitting a `describe` token
-array. Emitting `r-ready_3` would produce a `describe` invocation that
-resolves no metadata.
+carries metadata, so emitting `r-ready_3` would produce a `describe`
+invocation that resolves nothing.
+
+Template recovery SHALL be existence-driven, not textual: the conclusion's
+rule label is looked up in the theory as-is first, and a trailing `_<digits>`
+run is stripped only until a prefix names a rule that exists. This mirrors
+spindle's own `explanation::resolve_rule`, so `next` and `explain` attribute
+one conclusion to one rule. Blind stripping SHALL NOT be used — it would
+rewrite a rule genuinely named `phase_2` to `phase` and attribute that task's
+readiness to a different rule, or to none. When no prefix names an existing
+rule, the task is withheld as `missing-ready-rule` rather than reported
+against a guessed label.
+
+Where several rules derive one `(ready X)`, the projection SHALL report the
+bytewise-least resolved template, so attribution never depends on the order
+the reasoner happens to emit conclusions in.
 
 [[SPEC-001-elephant-core#REQ-011|`explain`]] proves the readiness literal and
 its firing rule. It does not render rule annotations. The returned
@@ -305,6 +356,7 @@ Trace:
 - [[SPEC-006-elephant-next#TEST-601]]
 - [[SPEC-006-elephant-next#TEST-605]]
 - [[SPEC-006-elephant-next#TEST-611]]
+- [[SPEC-006-elephant-next#TEST-613]]
 - [[SPEC-006-elephant-next#OBS-601]]
 
 ### REQ-606: Idle Is a Successful Observation
@@ -387,6 +439,7 @@ not a second contract.
       "description": "Design the data model",
       "acceptance": "TEST-601 fixture acceptance passes",
       "ready_literal": "(ready models)",
+      "promise_goal": "(completed models)",
       "ready_rule": "r-ready",
       "source": "SPEC-006-elephant-next#TEST-601",
       "commands": {
@@ -466,6 +519,7 @@ Verified by:
 - [[SPEC-006-elephant-next#TEST-608]]
 - [[SPEC-006-elephant-next#TEST-610]]
 - [[SPEC-006-elephant-next#TEST-611]]
+- [[SPEC-006-elephant-next#TEST-612]]
 
 ### CON-602: Read-Only Projection Boundary
 
@@ -581,6 +635,15 @@ Alternative: return only prose commands. Rejected: each client reconstructs
 quoting and argument ordering, creating the vocabulary drift this feature
 removes.
 
+The same reasoning binds the human projection: it SHALL NOT print a
+copy-pasteable shell command embedding corpus text. A task identifier,
+description, or acceptance string is authored by a theory member, and a
+single quote inside one would break out of surrounding shell quoting and
+execute whatever followed. Human output therefore names the goal without
+wrapping it in shell syntax, and replaces C0/C1 control characters so corpus
+content cannot repaint the terminal. `--json` carries the token array for
+programmatic use.
+
 ## Open Questions
 
 ### OPEN-601: Documentation Facts Enter the Closure
@@ -606,7 +669,8 @@ documentation rows in the operator's primary view.
 
 Nothing reasons over these predicates, so there is no inferential effect. The
 open question is ergonomic and diagnostic: whether `status` should learn to
-fold `kind doc` predicates out of its default view behind a flag, and whether
+fold documentation predicates out of its default view behind a flag, and
+whether
 a corpus that re-states a description should be advised against by
 [[SPEC-005-elephant-vocabulary#REQ-406]]. Resolve before implementation
 starts (owner: HOC).
@@ -631,7 +695,8 @@ Validates: [[SPEC-006-elephant-next#REQ-601]] and
 [[SPEC-006-elephant-next#CON-601]].
 
 Given two valid ready tasks, one has provable `(completed api)`. Another has
-an outstanding commitment whose goal is structurally equal to `(completed ui)`.
+an outstanding commitment whose goal is structurally equal to `(completed ui)`
+but spelled non-canonically, so a raw-text comparison would miss it.
 When `elephant next --json` runs, neither appears in `next`. Each appears in
 `withheld` with its stable reason.
 
@@ -727,6 +792,29 @@ array resolves a non-empty `meta.source`. A theory declaring both `r-ready`
 and `r-ready-hotfix` attributes each candidate to the rule that derived its
 own `(ready X)`.
 
+### TEST-612: Envelope Provenance Is Not a Readiness Citation
+
+Validates: [[SPEC-006-elephant-next#REQ-604]] and
+[[SPEC-006-elephant-next#CON-601]].
+
+Given a ready, fully documented task whose readiness rule carries no authored
+`(meta … (source …))`, the rule's resolved `source` is nonetheless the
+claims-attached `agent:<did>` provenance of its signer. The task does not
+appear in `next`; it appears once in `withheld` with `missing-ready-source`.
+A second theory that adds an authored citation to the same rule offers the
+task, with `source` reporting the citation rather than the signer.
+
+### TEST-613: Template Recovery Prefers an Existing Rule
+
+Validates: [[SPEC-006-elephant-next#REQ-605]].
+
+Given a theory containing a rule whose own label ends in a digit run —
+`phase_2` — alongside `r-ready`, resolution returns `phase_2` unchanged,
+resolves a grounded `phase_2_7` to `phase_2`, resolves `r-ready_2` to
+`r-ready`, and returns nothing for a label no prefix of which names a rule.
+A task whose readiness is derived by `phase_2` reports that rule, never
+`phase`.
+
 ## Observability
 
 ### OBS-601: Task Discovery Projection
@@ -745,21 +833,30 @@ without turning a read query into a second task log.
 
 ## Quality Gates
 
-- [ ] [[SPEC-006-elephant-next#REQ-601]] through
+- [x] [[SPEC-006-elephant-next#REQ-601]] through
   [[SPEC-006-elephant-next#REQ-606]] each link to applicable tests and
   [[SPEC-006-elephant-next#OBS-601]].
-- [ ] [[SPEC-006-elephant-next#CON-601]] has a full recogniser contract and
-  rejects plan paths before theory loading.
-- [ ] [[SPEC-006-elephant-next#CON-602]] has a pure-core implementation and
+- [x] [[SPEC-006-elephant-next#CON-601]] has a full recogniser contract and
+  rejects plan paths before theory loading — `Next` is a fieldless clap
+  variant, so recognition fails before `Paths::resolve`.
+- [x] [[SPEC-006-elephant-next#CON-602]] has a pure-core implementation
+  (`src/core/next.rs`, importing only spindle value types and the closure) and
   a passing scope-invariant test.
-- [ ] A fresh-context reviewer has checked that this does not reverse
-  [[SPEC-003-elephant-tasks#ADR-206]].
-- [ ] The `explain` / `describe --json` metadata pairing is verified by
-  [[SPEC-006-elephant-next#TEST-605]].
-- [ ] [[SPEC-006-elephant-next#ADR-604]] is consistent with
+- [x] A fresh-context reviewer has checked that this does not reverse
+  [[SPEC-003-elephant-tasks#ADR-206]] — reviewed against the specification
+  alone with a defect-finding mandate; five findings, all triaged below.
+- [x] The `explain` / `describe --json` metadata pairing is verified by
+  [[SPEC-006-elephant-next#TEST-605]], executing the emitted token arrays
+  unmodified.
+- [x] [[SPEC-006-elephant-next#ADR-604]] is consistent with
   [[SPEC-005-elephant-vocabulary#ADR-402]] and introduces no new suffix
-  resolution.
-- [ ] [[SPEC-006-elephant-next#OPEN-601]] is resolved before implementation.
+  resolution — template recovery is existence-driven and mirrors spindle.
+- [ ] [[SPEC-006-elephant-next#OPEN-601]] — still open. It governs `status`
+  display, not this projection, so it did not block implementation; it does
+  block calling the ergonomics settled.
+- [ ] [[SPEC-006-elephant-next#REQ-602]] is satisfied by `next` itself, but
+  the shared read path it inherits is not yet clean — see the MLS-lane gate
+  below.
 
 ## Gate Evidence Record
 
@@ -819,19 +916,77 @@ gates:
       models)'` is accepted and `commitments --json` reports goal
       "(completed models)" in state outstanding, exercising REQ-601's
       exclusion condition.
+  - gate: "Implementation conforms (unit + CLI acceptance)"
+    mechanism: "cargo test --lib && scripts/spec006-acceptance.sh"
+    result: pass
+    evidence: >-
+      169 library tests pass, of which 18 are the projection's own in
+      src/core/next.rs covering TEST-601..604 and TEST-609..613. The CLI-level
+      checks that need a real binary and store — TEST-605, TEST-606, TEST-607,
+      TEST-608, NFR-601 determinism, and the OBS-601 no-prose assertions — run
+      from scripts/spec006-acceptance.sh (make acceptance), all passing.
+      clippy -D warnings clean.
+  - gate: "Adversarial review (Constitutional Principle 12)"
+    mechanism: "fresh-context agent, specification + deliverable only"
+    result: pass-with-findings
+    evidence: >-
+      Five findings, each empirically demonstrated. Fixed: (1) literals were
+      built by string interpolation, so a quoted identifier such as "my task"
+      rendered as the two-argument (completed my task) and an outstanding
+      commitment stopped blocking it — now built through Literal::to_spl();
+      (2) a modal (must (ready X)) was matched as plain readiness, offering
+      work the theory does not derive — mode/temporal now rejected; (3) the
+      human "take" line was a copy-pasteable shell command embedding corpus
+      text, so a task name containing a quote was an injection vector — no
+      longer shell-quoted, and control characters are replaced; (4) template
+      recovery over-stripped a rule genuinely named phase_2, and the old unit
+      test had encoded that bug as intended — replaced by existence-driven
+      resolution. Not fixed, recorded below: (5) the shared read path.
+      Review also identified six weak tests; TEST-602 now commits its goal
+      non-canonically and reason precedence is checked pairwise.
+  - gate: "REQ-602 holds for the whole read path"
+    mechanism: "call-graph trace through queries::view"
+    result: fail
+    evidence: >-
+      `next` itself appends nothing, but view() calls e2ee::process_mls_lane,
+      which writes mls/lane.cursor and may rewrite the keybook. That is not an
+      Entry append, sync, or producer call, so CON-602's narrower prohibition
+      holds and TEST-606 passes — but only vacuously, because the fixture's
+      single-member lane is empty and the call short-circuits. REQ-602's
+      broader "local identity state" clause is therefore unverified for a
+      theory with pending lane traffic. Inherited from every read command, so
+      the fix belongs to the SPEC-001 read path rather than here.
 ```
 
 ## Status
 
-This specification is a draft. No implementation begins until a fresh-context
-review confirms the task convention, commitment matching, and JSON contract,
-and until [[SPEC-006-elephant-next#OPEN-601]] is resolved.
+**Implemented**, with two carried items.
+
+The command, its pure core, its tests, and its documentation are in place and
+the gates above record their evidence. Two things are deliberately not closed:
+[[SPEC-006-elephant-next#OPEN-601]], which governs `status` display rather
+than this projection; and the MLS-lane write in the shared read path, which
+predates this work and which no change scoped to `next` can fix.
 
 ## Changelog
 
 <details>
 <summary>Revision history</summary>
 
+- 0.3.0 — implemented. `elephant next` ships as a pure projection
+  (`src/core/next.rs`) behind a fieldless CLI variant. Adds
+  [[SPEC-006-elephant-next#TEST-612]] (envelope provenance is not a citation)
+  and [[SPEC-006-elephant-next#TEST-613]] (existence-driven template
+  recovery). Normative additions found by building it: `task`/`ready`/
+  `completed` are reserved built-in *control* vocabulary and are neither
+  declared nor declarable, and `kind` admits only `evidence`/`state`/
+  `discovery`, so 0.2.0's `(predicate task …)` / `(kind doc)` examples were
+  both invalid; a rule's auto-attached `agent:` provenance does not satisfy
+  the readiness-source gate; template recovery is existence-driven; modal and
+  temporally-bounded readiness is excluded; and every emitted literal is
+  rendered through `Literal::to_spl()` rather than string interpolation.
+  Carried: [[SPEC-006-elephant-next#OPEN-601]], and an MLS-lane write in the
+  shared read path that predates this change.
 - 0.2.0 — identify tasks by predicate argument (`(task ?x)`, `(ready ?x)`,
   `(completed ?x)`) instead of the flat `task-X` atom family, per
   [[SPEC-006-elephant-next#ADR-604]]. Replaces the `task-id` ABNF with a

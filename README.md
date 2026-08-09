@@ -121,6 +121,52 @@ elephant assert '(given (ci-green m2))' -t release
 > *first* assert to a theory after the daemon (re)starts (its view is not yet
 > warm) — never a blocked or failed assert (SPEC-005 NFR-402).
 
+Task discovery (SPEC-006) — ask the theory what work is available, instead of
+reassembling it from `status` + `commitments` + `explain`:
+
+```bash
+# a task is a predicate argument, not a name suffix: (task ?x), never task-x
+elephant assert '(given (task models))' -t release
+elephant assert '(given (task-description models "Design the data model"))' -t release
+elephant assert '(given (task-acceptance models "TEST-601 acceptance passes"))' -t release
+elephant assert '(given (prerequisite-met models))' -t release
+
+# ONE quantified rule serves every task — not one rule per task
+elephant assert '(normally r-ready (and (task ?x) (prerequisite-met ?x)) (ready ?x))' -t release
+elephant assert '(meta r-ready (source "SPEC-006-elephant-next#TEST-601"))' -t release
+
+elephant next -t release
+#   models  Design the data model
+#       accept   TEST-601 acceptance passes
+#       why      (ready models) via r-ready (SPEC-006-elephant-next#TEST-601)
+#       take     elephant promise '(completed models)' -t <theory>
+```
+
+`next` is a read: it never appends, promises, or syncs. `--json` adds
+`commands` token arrays — argument vectors, not shell strings — so an agent
+can run the exact `promise` / `explain` / `describe` invocation without
+reconstructing quoting:
+
+```bash
+elephant next -t release --json | jq -r '.next[0].commands.explain[]'
+#   elephant / explain / (ready models) / -t / <theory-id>
+```
+
+A ready task is **withheld** rather than offered when it is already
+`(completed ?x)`, carries an outstanding commitment, or is missing its
+description, acceptance, or the readiness rule's `source`. A bare identifier
+is not actionable, so `next` names the gap instead of suggesting the work:
+
+```bash
+elephant next -t release --json | jq -c '.withheld'
+#   [{"task":"api","reason":"missing-ready-source"}]
+```
+
+> A rule's `source` is auto-populated with the signer's `agent:` atom by the
+> claims wrapper (SPEC-001 ADR-012). That is provenance, not a citation, so
+> `next` treats it as missing — assert `(meta r-ready (source "SPEC-…"))` to
+> say *why* the work is ready, not merely who said so.
+
 ## Usage
 
 ### Joining across machines
