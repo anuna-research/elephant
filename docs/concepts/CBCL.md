@@ -2,7 +2,7 @@
 
 Common Business Communication Language — the safe, self-extending agent
 messaging language implemented by
-[cbcl-rs](https://codeberg.org/anuna/cbcl-rs) (named for McCarthy's 1982
+[cbcl-rs](https://git.anuna.io/anuna-research/cbcl-rs) (named for McCarthy's 1982
 proposal; Lean-verified invariants). Deliberately restricted to DCFL so
 every message is fully recognisable before action. Core: eight
 performatives (`tell ask reply ok error cancel hello bye`), wrapper forms

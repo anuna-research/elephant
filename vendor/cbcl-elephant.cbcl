@@ -3,7 +3,7 @@
 ; (https://www-formal.stanford.edu/jmc/elephant/elephant.html).
 ;
 ; Each performative carries an SPL-form payload (Spindle Lisp,
-; https://codeberg.org/anuna/spindle-rust), so that the message body
+; https://git.anuna.io/anuna-research/spindle-rust), so that the message body
 ; is itself a defeasible-logic sentence or rule that a peer's reasoner
 ; can ingest unchanged. The dialect provides the speech-act envelope
 ; (illocutionary force + identity); the SPL payload provides the

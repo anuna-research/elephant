@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Anuna Research
+#
+# elephant CI gate (Forgejo Actions). Runs the checks ./release.sh gates on
+# locally — `cargo clippy -D warnings`, `cargo test`, and the SPEC-006 CLI
+# acceptance script — on every push to main and every pull request, so a
+# regression is caught in review rather than at release time.
+#
+# Like the release pipeline, this clones the three sibling path dependencies
+# (all public on git.anuna.io) and pins each: `--locked` pins the dependency
+# GRAPH but not path-dependency *contents*, so CI must build against the same
+# pinned commits a release would. Keep the *_REF values in sync with
+# .forgejo/workflows/release.yaml — ./release.sh verifies the release file's
+# pins against your local checkouts before tagging, and a drift between the two
+# workflow files is exactly the skew that makes a green CI precede a red
+# release.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CBCL_RS_REF: 1c6fa8f581a69a7bcb88fb787fa37c81f5de4221
+  SPINDLE_RUST_REF: b85972029f293f7391a0e55eb20d5f8437e8ce59
+  DID_CRDT_REF: adb5c7ac1423173f00201cddffa60fe672fb2a53
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone + pin the sibling path dependencies
+        # Cloned to the sibling paths the `../<name>` path deps in Cargo.toml
+        # resolve to. All three are public on git.anuna.io, so no token needed.
+        run: |
+          clone_pin() {
+            [ -d "../$1" ] || git clone "https://git.anuna.io/anuna-research/$1.git" "../$1"
+            git -C "../$1" checkout --detach "$2"
+          }
+          clone_pin cbcl-rs      "$CBCL_RS_REF"
+          clone_pin spindle-rust "$SPINDLE_RUST_REF"
+          clone_pin did-crdt     "$DID_CRDT_REF"
+
+      - name: Ensure Rust toolchain (clippy)
+        # The Forgejo runner image ships node/git/curl but NOT rustup, and may
+        # lack a C toolchain (ring compiles a little C/asm). Install both if
+        # absent; appending to $GITHUB_PATH exposes cargo to later steps.
+        run: |
+          SUDO=""; command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+          if ! command -v cc >/dev/null 2>&1; then
+            $SUDO apt-get update && $SUDO apt-get install -y build-essential pkg-config curl
+          fi
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal
+          rustup component add clippy
+          rustc --version
+          cargo --version
+          cargo clippy --version
+
+      # Cache the DEPENDENCY SOURCES only — deliberately not `target`.
+      #
+      # This mirrors the hark pipeline, where caching `target` is what filled
+      # the runner's disk: the key is per-Cargo.lock, so every distinct lockfile
+      # minted another multi-gigabyte entry. The failure is not a clean "cache
+      # full" either — `tar` dies part-way through restoring
+      # `target/debug/deps/…` with ENOSPC, the step continues against a
+      # HALF-RESTORED target, and the build then fails pointing at the wrong
+      # thing entirely ("can't find crate for rand_core"), sending the reader
+      # after a dependency problem that does not exist. elephant's debug tree is
+      # larger than hark's (iroh, openmls, loro), so the trap is worse here.
+      #
+      # The registry is the part worth keeping: bounded, reusable across
+      # lockfiles, and where the network time actually goes. A cold `target`
+      # costs compile time every run; a slower green run beats a fast red one
+      # that blames the wrong crate.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-ci-v1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-v1-
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: SPEC-006 acceptance (CLI-level)
+        # TEST-605/606/607/608, NFR-601 determinism and the OBS-601 no-prose
+        # assertions need a real binary and a real store, so they cannot be
+        # `cargo test` unit tests. Runs against a throwaway ELEPHANT_HOME.
+        run: |
+          cargo build --locked
+          scripts/spec006-acceptance.sh target/debug/elephant

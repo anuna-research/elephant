@@ -9,16 +9,18 @@ set -e
 # Example: ./release.sh 0.1.0
 #
 # Bumps the version, runs the gate (test + clippy), commits, tags, and pushes.
-# Pushing the tag triggers .woodpecker/release.yaml on Codeberg, which
-# cross-compiles the four prebuilt binaries and publishes them (plus install.sh)
-# to Cloudflare R2, served at https://files.anuna.io/elephant/.
+# Pushing the tag triggers .forgejo/workflows/release.yaml on git.anuna.io,
+# which cross-compiles the four prebuilt binaries and publishes them (plus
+# install.sh) to Cloudflare R2, served at https://files.anuna.io/elephant/.
 #
 # Requires the three sibling checkouts (path dependencies) for the local gate:
 #   ../cbcl-rs  ../spindle-rust  ../did-crdt
 #
-# The Woodpecker pipeline builds against PINNED sibling commits (the *_REF
-# values in .woodpecker/release.yaml). This script VERIFIES, before tagging,
-# that the Cargo.lock it is about to ship both resolves and compiles under
+# The release pipeline builds against PINNED sibling commits (the *_REF
+# values in .forgejo/workflows/release.yaml). Those SHAs are forge-specific:
+# git.anuna.io does not share history with the old Codeberg mirrors, so a pin
+# copied from a Codeberg URL will not resolve. This script VERIFIES, before
+# tagging, that the Cargo.lock it is about to ship both resolves and compiles under
 # --locked against those exact pinned refs (see verify_lock_against_pins) — so a
 # local sibling checkout that has drifted ahead of its pin can no longer produce
 # a lock that passes here but fails in CI (as happened for v0.1.4). If the pins
@@ -51,7 +53,8 @@ _verify_teardown() {
 
 # Reproduce CI's contract locally before we tag. The release pipeline builds
 # with `cargo build --release --locked` against the PINNED sibling commits in
-# .woodpecker/release.yaml — NOT against your local sibling checkouts. When a
+# .forgejo/workflows/release.yaml — NOT against your local sibling checkouts.
+# When a
 # sibling checkout has drifted ahead of its pin (e.g. sitting on an unmerged
 # feature branch), the Cargo.lock the gate just refreshed can carry dependency
 # edges that don't exist at the pinned refs, and CI then dies with "cannot
@@ -59,13 +62,17 @@ _verify_teardown() {
 # resolving AND compiling the candidate lock against the pins, in throwaway
 # worktrees so your actual sibling checkouts are never disturbed.
 verify_lock_against_pins() {
-  local wp=".woodpecker/release.yaml"
+  local wp=".forgejo/workflows/release.yaml"
   [[ -f "$wp" ]] || error "Cannot find $wp to read the sibling pins."
 
+  # Forgejo Actions spells the pins as YAML `KEY: <sha>` under `env:`, where
+  # the Woodpecker pipeline used shell `KEY=<sha>`. Accept either separator so
+  # this keeps working if a pin is ever moved back into a run block.
   local cbcl_ref spindle_ref did_ref
-  cbcl_ref=$(grep -oE 'CBCL_RS_REF=[0-9a-fA-F]{7,40}'      "$wp" | head -1 | cut -d= -f2)
-  spindle_ref=$(grep -oE 'SPINDLE_RUST_REF=[0-9a-fA-F]{7,40}' "$wp" | head -1 | cut -d= -f2)
-  did_ref=$(grep -oE 'DID_CRDT_REF=[0-9a-fA-F]{7,40}'      "$wp" | head -1 | cut -d= -f2)
+  pin_of() { grep -oE "$1[:=][[:space:]]*[0-9a-fA-F]{7,40}" "$wp" | head -1 | grep -oE '[0-9a-fA-F]{7,40}$'; }
+  cbcl_ref=$(pin_of CBCL_RS_REF)
+  spindle_ref=$(pin_of SPINDLE_RUST_REF)
+  did_ref=$(pin_of DID_CRDT_REF)
   [[ -n "$cbcl_ref" && -n "$spindle_ref" && -n "$did_ref" ]] \
     || error "Could not parse CBCL_RS_REF / SPINDLE_RUST_REF / DID_CRDT_REF from $wp."
 
@@ -198,7 +205,7 @@ git push origin "$TAG"
 echo ""
 info "Release $TAG published!"
 echo ""
-echo "Woodpecker release pipeline triggered (.woodpecker/release.yaml)."
+echo "Release pipeline triggered (.forgejo/workflows/release.yaml)."
 echo "When it finishes, the release will be available at:"
 echo "  https://files.anuna.io/elephant/            (latest)"
 echo "  https://files.anuna.io/elephant/$TAG/"

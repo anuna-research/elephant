@@ -46,7 +46,7 @@ detect_platform() {
         *)
             printf 'error: unsupported operating system: %s\n' "$os" >&2
             printf 'elephant provides prebuilt binaries for macOS and Linux only.\n' >&2
-            printf 'Build from source instead: https://codeberg.org/anuna/elephant\n' >&2
+            printf 'Build from source instead: https://git.anuna.io/anuna-research/elephant\n' >&2
             return 1
             ;;
     esac
@@ -57,7 +57,7 @@ detect_platform() {
         *)
             printf 'error: unsupported architecture: %s\n' "$arch" >&2
             printf 'elephant provides prebuilt binaries for arm64 and x64 only.\n' >&2
-            printf 'Build from source instead: https://codeberg.org/anuna/elephant\n' >&2
+            printf 'Build from source instead: https://git.anuna.io/anuna-research/elephant\n' >&2
             return 1
             ;;
     esac

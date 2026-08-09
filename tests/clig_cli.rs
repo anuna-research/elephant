@@ -186,7 +186,7 @@ fn top_level_help_has_examples_and_support_path() {
         .success()
         .stdout(predicate::str::contains("Examples:"))
         .stdout(predicate::str::contains(
-            "https://codeberg.org/anuna/elephant",
+            "https://git.anuna.io/anuna-research/elephant",
         ));
 }
 

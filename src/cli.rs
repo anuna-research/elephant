@@ -24,7 +24,7 @@ use std::process::ExitCode;
         \x20 elephant -t release-v1 promise released --by 2026-08-01T00:00:00Z\n\
         \x20 elephant -t release-v1 status            conclusions with proof tags\n\
         \x20 elephant -t release-v1 commitments       who promised what, and its state\n\n\
-        Docs & support: https://codeberg.org/anuna/elephant"
+        Docs & support: https://git.anuna.io/anuna-research/elephant"
 )]
 pub struct Cli {
     #[command(subcommand)]

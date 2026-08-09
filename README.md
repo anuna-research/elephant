@@ -21,7 +21,7 @@ coordinate by exchanging **signed speech acts** into shared, append-only
 stands is *derived* by defeasible reasoning over signed evidence — never
 decreed by a status column.
 
-It is the successor to [hence](https://codeberg.org/anuna/hence) — in
+It is the successor to [hence](https://git.anuna.io/anuna-research/hence) — in
 ideas, not surface. hence coordinated work by treating completion as a
 defeasible conclusion over a local plan file; elephant carries that idea
 onto a peer-to-peer, encrypted theory that travels, and drops the
@@ -37,7 +37,7 @@ The concept comes from three observations:
   transition.
 - **Defeasible logic already handles mixed-trust, mixed-authority claims** —
   facts, rules, defeaters, preferences, trust weights. elephant embeds
-  [spindle-rust](https://codeberg.org/anuna/spindle-rust) for the closure.
+  [spindle-rust](https://git.anuna.io/anuna-research/spindle-rust) for the closure.
 - **McCarthy already designed the semantics.** *Elephant 2000* (1989):
   programs whose I/O is speech acts, that refer directly to the past instead
   of data structures, and whose correctness is "did it keep its promises?".
@@ -60,7 +60,7 @@ To build from source instead — which needs the three sibling checkouts
 (`../cbcl-rs`, `../spindle-rust`, `../did-crdt`) that elephant depends on via
 path deps — see **Quick start** below. Maintainers cut releases with
 `./release.sh <version>`, which gates, tags, and triggers the cross-compile +
-publish pipeline (`.woodpecker/release.yaml`).
+publish pipeline (`.forgejo/workflows/release.yaml`).
 
 ## Quick start
 
@@ -139,7 +139,7 @@ elephant next -t release
 #   models  Design the data model
 #       accept   TEST-601 acceptance passes
 #       why      (ready models) via r-ready (SPEC-006-elephant-next#TEST-601)
-#       take     elephant promise '(completed models)' -t <theory>
+#       take     promise (completed models)
 ```
 
 `next` is a read: it never appends, promises, or syncs. `--json` adds
@@ -330,10 +330,10 @@ Four sibling libraries do the load-bearing work; elephant is the glue.
    transport: iroh QUIC + pkarr/Mainline-DHT · join: SPAKE2
 ```
 
-- **[cbcl-rs](https://codeberg.org/anuna/cbcl-rs)** — the `cbcl-elephant`
+- **[cbcl-rs](https://git.anuna.io/anuna-research/cbcl-rs)** — the `cbcl-elephant`
   speech-act dialect (assert, retract, query, concede, commit, request,
   justify), canonical bytes, Lean-verified R1–R4 invariants.
-- **[spindle-rust](https://codeberg.org/anuna/spindle-rust)** — defeasible
+- **[spindle-rust](https://git.anuna.io/anuna-research/spindle-rust)** — defeasible
   closure, trust weighting, explain/why-not/require/what-if.
 - **[did-crdt](https://github.com/anuna-research/did-crdt)** — `did:crdt`
   identity (pure core, no networking).
