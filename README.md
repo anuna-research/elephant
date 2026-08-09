@@ -21,7 +21,7 @@ coordinate by exchanging **signed speech acts** into shared, append-only
 stands is *derived* by defeasible reasoning over signed evidence — never
 decreed by a status column.
 
-It is the successor to [hence](https://codeberg.org/anuna/hence) — in
+It is the successor to [hence](https://git.anuna.io/anuna-research/hence) — in
 ideas, not surface. hence coordinated work by treating completion as a
 defeasible conclusion over a local plan file; elephant carries that idea
 onto a peer-to-peer, encrypted theory that travels, and drops the
@@ -37,7 +37,7 @@ The concept comes from three observations:
   transition.
 - **Defeasible logic already handles mixed-trust, mixed-authority claims** —
   facts, rules, defeaters, preferences, trust weights. elephant embeds
-  [spindle-rust](https://codeberg.org/anuna/spindle-rust) for the closure.
+  [spindle-rust](https://git.anuna.io/anuna-research/spindle-rust) for the closure.
 - **McCarthy already designed the semantics.** *Elephant 2000* (1989):
   programs whose I/O is speech acts, that refer directly to the past instead
   of data structures, and whose correctness is "did it keep its promises?".
@@ -60,7 +60,7 @@ To build from source instead — which needs the three sibling checkouts
 (`../cbcl-rs`, `../spindle-rust`, `../did-crdt`) that elephant depends on via
 path deps — see **Quick start** below. Maintainers cut releases with
 `./release.sh <version>`, which gates, tags, and triggers the cross-compile +
-publish pipeline (`.woodpecker/release.yaml`).
+publish pipeline (`.forgejo/workflows/release.yaml`).
 
 ## Quick start
 
@@ -120,6 +120,52 @@ elephant assert '(given (ci-green m2))' -t release
 > cached view and is silently absent on a direct-store assert, or on the
 > *first* assert to a theory after the daemon (re)starts (its view is not yet
 > warm) — never a blocked or failed assert (SPEC-005 NFR-402).
+
+Task discovery (SPEC-006) — ask the theory what work is available, instead of
+reassembling it from `status` + `commitments` + `explain`:
+
+```bash
+# a task is a predicate argument, not a name suffix: (task ?x), never task-x
+elephant assert '(given (task models))' -t release
+elephant assert '(given (task-description models "Design the data model"))' -t release
+elephant assert '(given (task-acceptance models "TEST-601 acceptance passes"))' -t release
+elephant assert '(given (prerequisite-met models))' -t release
+
+# ONE quantified rule serves every task — not one rule per task
+elephant assert '(normally r-ready (and (task ?x) (prerequisite-met ?x)) (ready ?x))' -t release
+elephant assert '(meta r-ready (source "SPEC-006-elephant-next#TEST-601"))' -t release
+
+elephant next -t release
+#   models  Design the data model
+#       accept   TEST-601 acceptance passes
+#       why      (ready models) via r-ready (SPEC-006-elephant-next#TEST-601)
+#       take     promise (completed models)
+```
+
+`next` is a read: it never appends, promises, or syncs. `--json` adds
+`commands` token arrays — argument vectors, not shell strings — so an agent
+can run the exact `promise` / `explain` / `describe` invocation without
+reconstructing quoting:
+
+```bash
+elephant next -t release --json | jq -r '.next[0].commands.explain[]'
+#   elephant / explain / (ready models) / -t / <theory-id>
+```
+
+A ready task is **withheld** rather than offered when it is already
+`(completed ?x)`, carries an outstanding commitment, or is missing its
+description, acceptance, or the readiness rule's `source`. A bare identifier
+is not actionable, so `next` names the gap instead of suggesting the work:
+
+```bash
+elephant next -t release --json | jq -c '.withheld'
+#   [{"task":"api","reason":"missing-ready-source"}]
+```
+
+> A rule's `source` is auto-populated with the signer's `agent:` atom by the
+> claims wrapper (SPEC-001 ADR-012). That is provenance, not a citation, so
+> `next` treats it as missing — assert `(meta r-ready (source "SPEC-…"))` to
+> say *why* the work is ready, not merely who said so.
 
 ## Usage
 
@@ -284,10 +330,10 @@ Four sibling libraries do the load-bearing work; elephant is the glue.
    transport: iroh QUIC + pkarr/Mainline-DHT · join: SPAKE2
 ```
 
-- **[cbcl-rs](https://codeberg.org/anuna/cbcl-rs)** — the `cbcl-elephant`
+- **[cbcl-rs](https://git.anuna.io/anuna-research/cbcl-rs)** — the `cbcl-elephant`
   speech-act dialect (assert, retract, query, concede, commit, request,
   justify), canonical bytes, Lean-verified R1–R4 invariants.
-- **[spindle-rust](https://codeberg.org/anuna/spindle-rust)** — defeasible
+- **[spindle-rust](https://git.anuna.io/anuna-research/spindle-rust)** — defeasible
   closure, trust weighting, explain/why-not/require/what-if.
 - **[did-crdt](https://github.com/anuna-research/did-crdt)** — `did:crdt`
   identity (pure core, no networking).

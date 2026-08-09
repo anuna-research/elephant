@@ -12,6 +12,10 @@ build: ## Release build
 test: ## Run all tests
 	cargo test
 
+acceptance: ## SPEC-006 CLI-level acceptance (needs a built binary)
+	cargo build
+	scripts/spec006-acceptance.sh target/debug/elephant
+
 check: test lint ## Tests + lint
 
 lint: ## rustfmt --check + clippy -D warnings

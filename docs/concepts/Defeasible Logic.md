@@ -3,7 +3,7 @@
 A nonmonotonic logic of strict rules (`always`), defeasible rules
 (`normally`), defeaters (`except`) and superiority (`prefer`), yielding
 proof tags +D/+d/-d/-D per literal. elephant embeds
-[spindle-rust](https://codeberg.org/anuna/spindle-rust)'s SDL
+[spindle-rust](https://git.anuna.io/anuna-research/spindle-rust)'s SDL
 (ambiguity-blocking) engine: `parse_spl` → `reason()` →
 trust-weighted conclusions, plus `explain`, `why_not`, `what_if`, and
 bounded abduction.

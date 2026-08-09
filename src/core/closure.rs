@@ -77,8 +77,13 @@ pub struct Closure {
 /// weight, defeating the point of envelope-derived provenance.
 pub fn source_atom(did: &str) -> String {
     let tail = did.rsplit(':').next().unwrap_or(did);
-    format!("agent:{tail}")
+    format!("{AGENT_ATOM_PREFIX}{tail}")
 }
+
+/// Prefix of an envelope-derived provenance atom. Reserved: a consumer that
+/// reads a rule's `source` metadata uses it to tell auto-attached provenance
+/// apart from an author-written citation (SPEC-006 REQ-604).
+pub const AGENT_ATOM_PREFIX: &str = "agent:";
 
 fn rfc3339_from_ms(ms: u64) -> String {
     chrono::DateTime::from_timestamp_millis(ms as i64)
@@ -474,7 +479,7 @@ pub fn proof_state(t: ConclusionType) -> ProofState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::core::envelope::Hlc;
 
@@ -492,20 +497,20 @@ mod tests {
         format!("did:crdt:{}", format!("{seed:02x}").repeat(32))
     }
 
-    struct Fixture {
+    pub(crate) struct Fixture {
         entries: Vec<Entry>,
         counter: u64,
     }
 
     impl Fixture {
-        fn new() -> Fixture {
+        pub(crate) fn new() -> Fixture {
             Fixture {
                 entries: Vec::new(),
                 counter: 0,
             }
         }
 
-        fn add(&mut self, seed: u8, act: SpeechAct) -> String {
+        pub(crate) fn add(&mut self, seed: u8, act: SpeechAct) -> String {
             self.counter += 1;
             let hlc = Hlc {
                 wall_ms: 1_752_000_000_000 + self.counter,
@@ -526,7 +531,7 @@ mod tests {
             sid
         }
 
-        fn assert_spl(&mut self, seed: u8, spl: &str) -> String {
+        pub(crate) fn assert_spl(&mut self, seed: u8, spl: &str) -> String {
             let sid = self.next_sid(seed);
             let act = SpeechAct::Assert {
                 sentence_id: sid.clone(),
@@ -536,7 +541,27 @@ mod tests {
             sid
         }
 
-        fn next_sid(&self, seed: u8) -> String {
+        /// A `Commit` speech act, for exercising commitment-dependent
+        /// projections (SPEC-006 REQ-601) without hand-building the act.
+        pub(crate) fn commit(
+            &mut self,
+            seed: u8,
+            trigger: &str,
+            by: Option<&str>,
+            goal: &str,
+        ) -> String {
+            let sid = self.next_sid(seed);
+            let act = SpeechAct::Commit {
+                sentence_id: sid.clone(),
+                trigger: trigger.to_string(),
+                by: by.map(str::to_string),
+                goal: goal.to_string(),
+            };
+            self.add(seed, act);
+            sid
+        }
+
+        pub(crate) fn next_sid(&self, seed: u8) -> String {
             let hlc = Hlc {
                 wall_ms: 1_752_000_000_000 + self.counter + 1,
                 logical: 0,
@@ -545,7 +570,7 @@ mod tests {
             Entry::sentence_id("th-x", &did(seed), hlc)
         }
 
-        fn close(&self, trust: &str, now_ms: i64) -> Closure {
+        pub(crate) fn close(&self, trust: &str, now_ms: i64) -> Closure {
             let resolve = |d: &str, _k: &str| -> Option<ed25519_dalek::VerifyingKey> {
                 (1u8..=9)
                     .find(|s| did(*s) == d)

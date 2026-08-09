@@ -24,7 +24,7 @@ use std::process::ExitCode;
         \x20 elephant -t release-v1 promise released --by 2026-08-01T00:00:00Z\n\
         \x20 elephant -t release-v1 status            conclusions with proof tags\n\
         \x20 elephant -t release-v1 commitments       who promised what, and its state\n\n\
-        Docs & support: https://codeberg.org/anuna/elephant"
+        Docs & support: https://git.anuna.io/anuna-research/elephant"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -157,6 +157,17 @@ pub enum Command {
     },
     /// Commitment ledger with derived states
     Commitments,
+    /// Well-described work this theory says is available now
+    ///
+    /// Projects `(task ?x)` that is also `(ready ?x)`, is not `(completed ?x)`,
+    /// and carries no outstanding commitment — with the description, acceptance
+    /// criterion and source-bearing readiness rule an agent needs before
+    /// promising (SPEC-006). Read-only: it never appends, promises, or syncs.
+    ///
+    /// Takes no positional argument. There is no plan file and no task
+    /// lifecycle to recover (SPEC-003 ADR-206); the theory is selected with the
+    /// global `-t`, exactly like every other read.
+    Next,
     /// Inspect a single entry by its sentence-id
     ///
     /// The read counterpart to the sentence-ids that `assert`/`define` mint
@@ -529,6 +540,7 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         Command::Require { literal } => crate::queries::require(&ctx, &literal),
         Command::WhatIf { facts_then_goal } => crate::queries::what_if(&ctx, &facts_then_goal),
         Command::Commitments => crate::queries::commitments(&ctx),
+        Command::Next => crate::queries::next(&ctx),
         Command::Show { sentence_id } => crate::queries::show(&ctx, &sentence_id),
         Command::Log(filter) => crate::queries::log(&ctx, &filter),
         Command::Describe { labels } => crate::queries::describe(&ctx, &labels),

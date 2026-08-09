@@ -729,6 +729,145 @@ pub fn commitments(ctx: &Ctx) -> AppResult<()> {
     Ok(())
 }
 
+// ── next: theory-derived task discovery (SPEC-006 REQ-601..606) ─────────
+
+/// Argument vector invoking `elephant <verb> <operand> -t <theory> …`.
+///
+/// A token array, never a shell string (SPEC-006 ADR-603): the operand is one
+/// element, so a parenthesised predicate literal needs no quoting and the JSON
+/// never becomes a code-execution channel.
+fn tokens(verb: &str, operand: &str, theory: &str, json: bool) -> Vec<String> {
+    let mut v = vec![
+        "elephant".to_string(),
+        verb.to_string(),
+        operand.to_string(),
+        "-t".to_string(),
+        theory.to_string(),
+    ];
+    if json {
+        v.push("--json".to_string());
+    }
+    v
+}
+
+/// Corpus text rendered to a terminal, with C0/C1 control characters replaced.
+///
+/// Description, acceptance and task identifiers are authored by theory
+/// members, so an ESC in one of them could repaint or spoof surrounding
+/// output. Printable text is untouched.
+fn safe(s: &str) -> String {
+    s.chars()
+        .map(|ch| {
+            if ch.is_control() && ch != '\t' {
+                '\u{fffd}'
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+/// `elephant next` — what well-described work this theory says is available.
+///
+/// Read-only (SPEC-006 REQ-602): one closure, no producer, no sync, no append.
+/// An empty selection is a successful observation, not an error (REQ-606).
+pub fn next(ctx: &Ctx) -> AppResult<()> {
+    let v = view(ctx)?;
+    let started = std::time::Instant::now();
+    let sel = crate::core::next::project(&v.closure);
+    let elapsed_us = started.elapsed().as_micros();
+
+    // OBS-601: counts and timing only — never description, acceptance, or
+    // source text, which are ordinary conclusions and so are in reach here.
+    let mut by_reason: std::collections::BTreeMap<&str, usize> = Default::default();
+    for w in &sel.withheld {
+        *by_reason.entry(w.reason.as_str()).or_default() += 1;
+    }
+    tracing::info!(
+        theory = %v.store.theory_id,
+        closure = %crate::core::fingerprint::of_closure(&v.closure).qualified(),
+        candidates = sel.next.len(),
+        withheld = sel.withheld.len(),
+        withheld_by_reason = ?by_reason,
+        duration_us = elapsed_us,
+        "next: task discovery projection"
+    );
+
+    let theory_id = &v.store.theory_id;
+    if ctx.json {
+        let next_items: Vec<_> = sel
+            .next
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "task": c.task,
+                    "description": c.description,
+                    "acceptance": c.acceptance,
+                    "ready_literal": c.ready_literal,
+                    "promise_goal": c.promise_goal,
+                    "ready_rule": c.ready_rule,
+                    "source": c.source,
+                    "commands": {
+                        "promise": tokens("promise", &c.promise_goal, theory_id, false),
+                        "explain": tokens("explain", &c.ready_literal, theory_id, false),
+                        "describe": tokens("describe", &c.ready_rule, theory_id, true),
+                    },
+                })
+            })
+            .collect();
+        let withheld_items: Vec<_> = sel
+            .withheld
+            .iter()
+            .map(|w| serde_json::json!({"task": w.task, "reason": w.reason.as_str()}))
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({"v":1, "theory": theory_id,
+                "next": next_items, "withheld": withheld_items})
+        );
+    } else if sel.next.is_empty() && sel.withheld.is_empty() {
+        println!("no tasks — this theory derives no (task ?x) that is also (ready ?x)");
+    } else {
+        if sel.next.is_empty() {
+            println!("nothing ready to take.");
+        }
+        for c in &sel.next {
+            println!("{}  {}", safe(&c.task), safe(&c.description));
+            println!("    accept   {}", safe(&c.acceptance));
+            println!(
+                "    why      {} via {} ({})",
+                safe(&c.ready_literal),
+                safe(&c.ready_rule),
+                safe(&c.source)
+            );
+            // Deliberately NOT presented as a copy-pasteable shell line. The
+            // goal embeds corpus-authored text that any theory member can
+            // write, including a quote; wrapping it in '…' would hand the
+            // reader a command that breaks out of the quoting and runs
+            // whatever the author appended. `--json` carries the token array
+            // for exactly this reason (SPEC-006 ADR-603).
+            println!("    take     promise {}", safe(&c.promise_goal));
+        }
+        for w in &sel.withheld {
+            println!("withheld {:<24} {}", safe(&w.task), w.reason.as_str());
+        }
+        // Only advertise the documentation remedy when a documentation reason
+        // is actually present: `completed` and `outstanding-commitment` are
+        // not authoring faults and there is nothing to add.
+        let repairable = sel.withheld.iter().any(|w| {
+            !matches!(
+                w.reason,
+                crate::core::next::Reason::Completed
+                    | crate::core::next::Reason::OutstandingCommitment
+            )
+        });
+        if repairable {
+            println!("(ready but under-documented — assert the missing fact to offer it)");
+        }
+    }
+    Ok(())
+}
+
 // ── show: inspect one entry by sentence-id (#9) ─────────────────────────
 
 /// The read counterpart to the sentence-ids that producers mint: locate the
