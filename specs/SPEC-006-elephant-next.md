@@ -197,9 +197,16 @@ all of these conditions hold:
 - The theory does not positively derive `(completed X)`.
 - No outstanding [[Commitment]] has a goal structurally equal to `(completed X)`.
 
-Structural equality is spindle literal equality over predicate symbol,
-polarity, and argument terms. It is not string comparison over rendered
-output.
+Goal equality SHALL reuse the existing commitment-reflection comparison from
+[[SPEC-001-elephant-core#CON-003]]: both sides are parsed through the one SPL
+recogniser and compared in canonical `to_spl()` form. It is never a comparison
+of raw user text or of human display output.
+
+For the task identifiers this projection recognises — arg 0 is a
+`Term::Symbol` per [[SPEC-006-elephant-next#CON-601]] — canonical-form equality
+and spindle `Literal` equality coincide, so no separate comparison path is
+introduced. They can diverge only for numeric argument terms, which
+[[SPEC-006-elephant-next#CON-601]] already excludes from the convention.
 
 The command does not infer readiness from file position, source order, agent
 identity, an assignment literal, or an unproved rule head.
@@ -395,10 +402,18 @@ not a second contract.
 }
 ```
 
-`ready_literal` and the `promise` / `explain` operands are rendered in
-predicate form by the shared `closure::literal_display` helper, so a token
-array pasted back into `explain` re-parses to the identical literal through
-the existing `parse_literal` path.
+`ready_literal` and the `promise` / `explain` operands SHALL be rendered by
+spindle's canonical `Literal::to_spl()`, which is the parenthesised form
+`(ready models)`.
+
+They SHALL NOT be rendered by `closure::literal_display`. That helper strips
+the outer parentheses from a positive literal for human output, yielding
+`ready models`; it is bound to the status view and the closure fingerprint,
+and is not a machine operand. Both forms happen to re-parse through
+`parse_literal` today, so the distinction is not self-correcting — it has to
+be specified. `to_spl()` is also the form the commitment ledger already
+reports as `commitments[].goal`, so a `promise` token array and the ledger
+entry it produces render identically.
 
 The `commands` members are JSON token arrays, not commands passed to a shell.
 The consumer executes an array only after its own approval and argument
@@ -575,10 +590,24 @@ Because per-task prose is a fact rather than a `meta` property
 admitted conclusion. It therefore appears in `status` output and contributes
 to the closure fingerprint, where the 0.1.0 `meta` carrier would not have.
 
+This is observed, not predicted. On elephant 0.1.6 a four-fact task fixture
+gives:
+
+```
+ +D  prerequisite-met models
+ +d  ready models
+ +D  task models
+ +D  task-acceptance models "TEST-601 fixture acceptance passes"
+ +D  task-description models "Design the data model"
+```
+
+Two of the five default `status` rows are prose. At forty tasks that is eighty
+documentation rows in the operator's primary view.
+
 Nothing reasons over these predicates, so there is no inferential effect. The
 open question is ergonomic and diagnostic: whether `status` should learn to
-fold `kind doc` predicates out of its default view, and whether a corpus that
-re-states a description should be advised against by
+fold `kind doc` predicates out of its default view behind a flag, and whether
+a corpus that re-states a description should be advised against by
 [[SPEC-005-elephant-vocabulary#REQ-406]]. Resolve before implementation
 starts (owner: HOC).
 
@@ -757,19 +786,39 @@ gates:
     result: unverified
     evidence: "Implementation has not started."
   - gate: "Prose survives as a predicate argument term"
-    mechanism: "parser round-trip on (given (task-description x \"some prose\"))"
-    result: unverified
+    mechanism: "spindle parser harness + end-to-end elephant assert/status"
+    result: pass
     evidence: >-
-      Structurally supported — the SPL lexer folds a quoted string into an
-      SExpr::Atom and parse_term_from_atom interns it as Term::Symbol — but not
-      yet exercised end to end through elephant assert.
+      Run 2026-08-09 on elephant 0.1.6 (debug). Parser: (given (task-description
+      models "Design the data model")) yields task-description/2 with args
+      [Symbol("models"), Symbol("Design the data model")] — interior spaces
+      intact, no truncation at the space. End to end: the same assert through
+      the real producer path is accepted (s-da88b8f918c7a066) and `status`
+      reports it as a +D conclusion. (ready models) is +d via the quantified
+      rule, confirming prose facts and readiness coexist.
   - gate: "Readiness rule label needs no second reasoner pass"
-    mechanism: "TEST-609 instrumented closure fixture"
-    result: unverified
+    mechanism: "single reason() call, inspect Conclusion.rule_label"
+    result: pass
     evidence: >-
-      Conclusions carry a rule_label and spindle recovers a template by
-      stripping a trailing _<digits> run; confirm this is a lookup over
-      computed conclusions rather than a re-derivation.
+      Run 2026-08-09. One spindle reason() call over a 3-task fixture produced
+      26 conclusions, each positive (ready ?x) carrying a rule_label, with no
+      explanation::explain call anywhere in the harness. Grounded instance
+      names observed as r-ready_2, r-ready_3, r-ready-hotfix_1, confirming the
+      {template}_{n} rename REQ-605 guards against is real rather than
+      hypothetical; stripping the trailing _<digits> run recovers r-ready and
+      r-ready-hotfix, each resolving its own meta.source. A task derivable only
+      by r-ready-hotfix is attributed to that rule, satisfying TEST-611.
+  - gate: "REQ-605 receipt pair resolves end to end"
+    mechanism: "elephant explain / describe --json on a live theory"
+    result: pass
+    evidence: >-
+      Run 2026-08-09. `explain '(ready models)'` proves it via defeasible rule
+      r-ready — note explain already reports the template label, not the
+      grounded instance. `describe r-ready --json` returns
+      meta.source = SPEC-006-elephant-next#TEST-601. `promise '(completed
+      models)'` is accepted and `commitments --json` reports goal
+      "(completed models)" in state outstanding, exercising REQ-601's
+      exclusion condition.
 ```
 
 ## Status
@@ -792,6 +841,11 @@ and until [[SPEC-006-elephant-next#OPEN-601]] is resolved.
   `MetaTarget` has no per-instance form. Adds TEST-610 (near-miss shapes) and
   TEST-611 (template rule label). Closes 0.1.0's deferred parameterised-task
   question and opens [[SPEC-006-elephant-next#OPEN-601]] in its place.
+  Verified against elephant 0.1.6, which corrected two drafting errors: goal
+  equality reuses canonical `to_spl()` comparison rather than the spindle
+  `Literal` equality first claimed, and machine operands are rendered by
+  `to_spl()` rather than `closure::literal_display`, which strips the outer
+  parentheses for human output.
 - 0.1.0 — initial native, read-only `elephant next` proposal. It restores
   theory-derived task discovery while preserving SPEC-003's retirement of the
   hence-compatible task lifecycle surface.
