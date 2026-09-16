@@ -1,0 +1,855 @@
+---
+id: SPEC-008
+title: Destination-bound reports of source theory results
+version: 0.1.0
+status: draft
+date: 2026-09-16
+tier: 1
+---
+
+# SPEC-008 — Destination-bound reports of source theory results
+
+## Orientation
+
+Intent: Let a participant deliberately share a selected theory result with another group, retaining authorship and an explicit expiry.
+The receiving group decides whether that [[Result Report]] supports its own decisions.
+
+Metaphor: a signed laboratory report states what a named observer found; it does not deliver the laboratory or replace the recipient's judgement.
+
+Structure (data flow):
+
+```text
+source theory + explicit selection
+             |
+             v
+report exporter (CON-701) --> signed destination-bound Entry file
+                                          |
+                                          v
+recipient importer (CON-702) --> destination journal
+                                          |
+                                          v
+pure report projection (CON-703) --> local Spindle bridge rules
+```
+
+Decisions: [[SPEC-008-theory-reports#ADR-701]] reuses destination-bound Entry signatures.
+[[SPEC-008-theory-reports#ADR-702]] separates reports from proofs and rule imports.
+[[SPEC-008-theory-reports#ADR-703]] requires explicit refresh and expiry; it provides no live source subscription.
+
+Load-bearing: [[SPEC-008-theory-reports#REQ-701]], [[SPEC-008-theory-reports#REQ-703]], [[SPEC-008-theory-reports#REQ-704]], and [[SPEC-008-theory-reports#REQ-705]].
+
+Controls:
+- [[SPEC-008-theory-reports#REQ-701]] exports only an explicitly selected literal to an explicit destination; the signer needs local access to both theories.
+- [[SPEC-008-theory-reports#REQ-702]] requires recognised bytes and a valid destination-bound signature using destination-known keys; roster status is not source authority.
+- [[SPEC-008-theory-reports#REQ-703]] never upgrades reporter testimony into independently verified source evidence or source-export authority.
+- [[SPEC-008-theory-reports#REQ-704]] uses `observed_at <= t < expires_at` and known effective withdrawals; colliding receipts never project; no automatic refresh.
+- [[SPEC-008-theory-reports#REQ-705]] protects `report-result`: its publisher is the verified signer's full DID-derived atom; authored facts or heads cannot forge it.
+- [[SPEC-008-theory-reports#REQ-706]] enables projection only in new closure-3 theories; default `off`, diagnostic `observe`, explicit `on`; existing theories retain their semantics.
+- [[SPEC-008-theory-reports#NFR-701]] bounds report input to 64 KiB and canonical literal text to 4 KiB; expiry is explicit with no default duration.
+
+Open: The maintainer validates selected disclosure and expiry policy before approval.
+A human security reviewer evaluates the report admission and protected-predicate boundary before implementation.
+Automatic upstream tracking, portable source snapshots, and Spindle rule modules remain owned follow-up designs in [[SPEC-008-theory-reports#Deferred work]].
+Expired or withdrawn reports remain inspectable history; the next query recomputes conclusions without their support, leaving any independent support intact.
+`observed_at` is the sampled export evaluation time over captured local input, not a claim that the replica knew a complete source history then.
+Historical queries use currently known entries and effective timestamps; they do not reconstruct a past knowledge frontier.
+Reports import no source rules; source access alone establishes neither source truth nor organisational export authority.
+
+Detail: Reviewer → [[SPEC-008-theory-reports#Decisions]] → [[SPEC-008-theory-reports#Deferred work]].
+Implementer → [[SPEC-008-theory-reports#Contracts]] → [[SPEC-008-theory-reports#Tests]].
+Stakeholder → [[SPEC-008-theory-reports#Worked example]] → [[users/theory-linker/happy-paths#Publish a QA result]].
+
+The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL have their BCP 14 meaning only in capitals.
+
+## Intent and failure modes
+
+The user's QA-to-release scenario requires selective evidence sharing across separate encrypted groups.
+[[SPEC-007-theory-references]] supplies stable references; it deliberately supplies no logical import.
+The following failure modes motivate this separate contract.
+
+### Provenance laundering
+
+Copying a source conclusion into a destination fact hides who selected it and makes a defeasible source conclusion appear locally unquestionable.
+A copied source Entry also fails the destination binding of [[SPEC-001-elephant-core#CON-002]].
+
+### Stale approval
+
+A reported approval persists after the source changes or goes offline.
+Without explicit freshness, the recipient mistakes a historical observation for the source's current position.
+
+### Unintended disclosure
+
+Bulk export reveals premises, membership, or private policy that the reporter never selected for disclosure.
+Having source access is not an instruction to publish its contents.
+
+### Forged reporter identity
+
+An ordinary logical fact can name any publisher.
+Unless the interpreter derives publisher identity from a verified envelope, a destination member can impersonate a trusted reporter in a rule premise.
+
+### Semantic substitution
+
+Importing source rules recomputes their meaning against destination facts and opponents.
+That operation differs from accepting a report of the source's own conclusion.
+
+## Scope and trust model
+
+The first version supports manual export, file inspection, destination import, bounded report use, and signer withdrawal.
+Transporting the exported file is an explicit operator action outside this contract.
+No automatic network fetch, cross-theory subscriber, or recursive closure composition is added.
+
+The exporter operates on accessible local replicas and uses the destination's existing key resolution for the signing identity.
+Destination readers need no source membership.
+They verify the destination signature and trust the reporter's testimony according to their authored rules.
+They do not verify the source computation, the source's complete state, or permission granted by source administrators.
+Known-key admission does not assert current roster membership.
+A removed or non-roster identity with a retained resolvable key remains cryptographically verifiable under the existing Entry contract.
+Destination bridge authors explicitly choose which reporter identities and receipts to accept; import does not grant that acceptance.
+
+The explicit export invocation authorises disclosure of the selected result to the named destination.
+This command does not impose or prove a separate organisation-wide export policy.
+Source members already hold decrypted data; preventing a member from exfiltrating that data is outside this feature's threat model.
+The threat model includes malformed files, replay into another theory, false reporter attribution, overbroad exports, and stale or retracted evidence.
+
+## Requirements
+
+### REQ-701 — Explicit selected export
+
+The exporter SHALL create a destination-bound signed report only from the explicit selection defined by [[SPEC-008-theory-reports#CON-701]].
+The selection consists of source, destination, one ground literal, and absolute expiry.
+No whole-theory or wildcard export exists.
+The exporter reads the source once and evaluates that captured local input at the recorded observation time.
+Existing membership/access checks apply to both stores.
+Successful export creates only the requested file and advances the signer's existing clock allocation state.
+It does not append the report to either theory.
+
+Trace: [[SPEC-008-theory-reports#Unintended disclosure]]; [[SPEC-008-theory-reports#CON-701]]; [[SPEC-008-theory-reports#TEST-701]]; [[SPEC-008-theory-reports#TEST-702]]; [[SPEC-008-theory-reports#TEST-703]]; [[SPEC-008-theory-reports#TEST-704]]; [[SPEC-008-theory-reports#TEST-705]]; [[SPEC-008-theory-reports#TEST-732]]; [[SPEC-008-theory-reports#TEST-742]]; [[SPEC-008-theory-reports#OBS-701]].
+
+### REQ-702 — Destination-bound admission
+
+The importer SHALL append only reports satisfying [[SPEC-008-theory-reports#CON-702]].
+The importer preserves the original envelope and signature.
+An import is not a new assertion by the importer.
+Repeated import of identical bytes is idempotent.
+A different signed entry with the same receipt produces an ambiguity error rather than replacement.
+Direct replication retains both entries as history; neither supplies report evidence under [[SPEC-008-theory-reports#CON-703]].
+
+Trace: [[SPEC-008-theory-reports#Provenance laundering]]; [[SPEC-008-theory-reports#CON-702]]; [[SPEC-008-theory-reports#TEST-706]]; [[SPEC-008-theory-reports#TEST-707]]; [[SPEC-008-theory-reports#TEST-708]]; [[SPEC-008-theory-reports#TEST-709]]; [[SPEC-008-theory-reports#TEST-710]]; [[SPEC-008-theory-reports#TEST-730]]; [[SPEC-008-theory-reports#TEST-735]]; [[SPEC-008-theory-reports#TEST-737]]; [[SPEC-008-theory-reports#TEST-739]]; [[SPEC-008-theory-reports#OBS-701]].
+
+### REQ-703 — Evidence status
+
+Report views SHALL identify the result as `reporter-attested` and attribute its publisher from the verified envelope.
+The view includes source reference, ground literal, observed tag, observation time, expiry, and destination report reference.
+Signature verification never claims source membership, source-export authority, proof completeness, or source freshness beyond the stated observation.
+The existing semantic closure fingerprint is not used as a proof or snapshot identity.
+An immutable report pins the reporter's statement; it does not pin an independently replayable source snapshot.
+
+Trace: [[SPEC-008-theory-reports#Provenance laundering]]; [[SPEC-008-theory-reports#CON-703]]; [[SPEC-008-theory-reports#TEST-711]]; [[SPEC-008-theory-reports#TEST-712]]; [[SPEC-008-theory-reports#TEST-713]]; [[SPEC-008-theory-reports#TEST-744]]; [[SPEC-008-theory-reports#TEST-746]]; [[SPEC-008-theory-reports#OBS-701]].
+
+### REQ-704 — Time-bounded evidence and withdrawal
+
+The projection SHALL emit evidence only for admitted, unambiguous reports that satisfy `observed_at <= evaluation_time < expires_at` and lack an effective same-signer retraction.
+Evaluation uses an explicit time argument, never a clock read inside the pure core.
+Withdrawal uses the existing destination-theory retraction operation.
+Expiry and withdrawal remove a premise; neither derives the literal's logical complement.
+Source changes alone have no effect on an already imported report.
+Refresh requires another explicit export/import, with withdrawal of any old report the publisher no longer endorses.
+Multiple unexpired reports coexist; there is no implicit last-writer-wins rule or automatic supersession.
+
+Trace: [[SPEC-008-theory-reports#Stale approval]]; [[SPEC-008-theory-reports#CON-703]]; [[SPEC-008-theory-reports#TEST-714]]; [[SPEC-008-theory-reports#TEST-715]]; [[SPEC-008-theory-reports#TEST-716]]; [[SPEC-008-theory-reports#TEST-717]]; [[SPEC-008-theory-reports#TEST-718]]; [[SPEC-008-theory-reports#TEST-734]]; [[SPEC-008-theory-reports#TEST-738]]; [[SPEC-008-theory-reports#TEST-743]]; [[SPEC-008-theory-reports#OBS-701]].
+
+### REQ-705 — Explicit local inference
+
+The interpreter SHALL expose active reports only through the protected premise defined by [[SPEC-008-theory-reports#CON-703]].
+It does not assert the reported source literal as a destination fact.
+Any conclusion using that report requires a destination-authored bridge rule.
+The reporter argument comes from the verified envelope, never an asserted publisher field.
+The report payload contains no source rule, preference, trust directive, or executable expression.
+Existing theory members retain their existing ability to author destination rules; this feature adds no privileged release-approval role.
+
+Trace: [[SPEC-008-theory-reports#Forged reporter identity]]; [[SPEC-008-theory-reports#Semantic substitution]]; [[SPEC-008-theory-reports#CON-703]]; [[SPEC-008-theory-reports#TEST-719]]; [[SPEC-008-theory-reports#TEST-720]]; [[SPEC-008-theory-reports#TEST-721]]; [[SPEC-008-theory-reports#TEST-722]]; [[SPEC-008-theory-reports#TEST-723]]; [[SPEC-008-theory-reports#TEST-731]]; [[SPEC-008-theory-reports#TEST-736]]; [[SPEC-008-theory-reports#OBS-701]].
+
+### REQ-706 — Explicit enable and rollback
+
+The evaluator SHALL select report projection through the explicit `reports` mode in [[SPEC-008-theory-reports#CON-703]].
+The default is `off`, because existing theories do not expect cross-theory premises.
+`observe` provides report diagnostics without logical premises.
+`on` supplies active report premises for locally authored rules in a closure-3 theory.
+Switching to `off` changes evaluation immediately on the next query without deleting any report or restarting a daemon.
+Mode is reported in JSON and is part of evaluation context, like reference time.
+
+Trace: [[SPEC-008-theory-reports#Provenance laundering]]; [[SPEC-008-theory-reports#TEST-724]]; [[SPEC-008-theory-reports#TEST-725]]; [[SPEC-008-theory-reports#TEST-726]]; [[SPEC-008-theory-reports#TEST-733]]; [[SPEC-008-theory-reports#TEST-740]]; [[SPEC-008-theory-reports#TEST-741]]; [[SPEC-008-theory-reports#TEST-745]]; [[SPEC-008-theory-reports#OBS-701]].
+
+### NFR-701 — Bounded recognition
+
+Report recognition SHALL reject files larger than 65,536 bytes and literal strings larger than 4,096 UTF-8 bytes before semantic action.
+These are proposed protocol limits, not measured workload claims; the maintainer ratifies them with the initial QA fixtures.
+The file limit includes the envelope, JSON syntax, signature, and a single optional terminal newline.
+Expiry has no implicit duration: the publisher chooses the operational tolerance for stale evidence.
+
+Trace: [[SPEC-008-theory-reports#Unintended disclosure]]; [[SPEC-008-theory-reports#CON-701]]; [[SPEC-008-theory-reports#TEST-727]]; [[SPEC-008-theory-reports#TEST-728]]; [[SPEC-008-theory-reports#OBS-701]].
+
+### NFR-702 — Deterministic replay of destination evidence
+
+Report projection SHALL produce identical results from identical admitted entries, key resolution, mode, and evaluation time regardless of merge order.
+This covers the destination's knowledge, not a reconstruction of the source or the destination's historical knowledge frontier.
+
+Trace: [[SPEC-008-theory-reports#Stale approval]]; [[SPEC-008-theory-reports#TEST-729]]; [[SPEC-008-theory-reports#OBS-701]].
+
+## Contracts
+
+### CON-701 — Export and wire profile
+
+```text
+elephant report export '<ground-literal>' -t <source> --to <destination>
+    --expires-at <UTC-time> --out <new-file> [--json]
+```
+
+All command examples are proposed interfaces.
+Both theory arguments use existing local ID-or-alias grammar.
+The exporter resolves IDs before constructing the envelope.
+It rejects equal source and destination IDs.
+The command captures the current source input and uses the current observation time; historical `--at` export is rejected.
+The source evaluator explicitly uses report mode `off`, preventing this command from automatically chaining imported report projections.
+Ordinary source assertions can still contain human or machine testimony; the command cannot prove independent origins.
+
+The ground-literal grammar is the existing SPL literal grammar, restricted to a fully ground, non-modal, non-temporal predicate or its explicit negation.
+No variable, arithmetic expression, additional form, or embedded rule is accepted.
+The sole SPL recogniser builds a typed literal; the exporter obtains its canonical `to_spl()` representation.
+The output carries this representation as one escaped SPL string, not executable source text.
+The producer uses typed serializers for SPL strings, CBCL, and JSON.
+
+Tag selection uses the captured source conclusion set:
+`+D` first, then `+d`, then `-d`, then `-D`, otherwise `undetermined`.
+These are quoted result states, not destination proof tags.
+A negative tag means non-provability of the selected literal, not provability of its complement.
+
+Times use UTC RFC 3339 with exactly millisecond precision: `YYYY-MM-DDTHH:MM:SS.sssZ`.
+The recogniser checks valid Gregorian dates and rejects leap-second spelling, offsets, missing fractions, and overflow.
+The ordering condition is `observed_at < expires_at`.
+The observation time equals the envelope HLC wall time represented at millisecond precision.
+The exporter allocates the destination HLC first and evaluates the captured source input at that wall time.
+The source corpus can contain future-HLC entries; ordinary source closure semantics decide their contribution.
+This timestamp reports when the exporter evaluated captured input, not a completeness frontier or timestamp filter over source entries.
+The existing HLC allocator prevents sentence reuse even though export appends no journal entry.
+
+The output is an existing Entry addressed to the destination theory.
+Its Assert payload is exactly this metadata AST, in the order shown:
+
+```text
+(meta elephant-report
+  (version 1)
+  (source-theory "<canonical theory-only elephant URI>")
+  (literal "<canonical ground literal>")
+  (tag "<+D|+d|-D|-d|undetermined>")
+  (observed-at "<UTC-time>")
+  (expires-at "<UTC-time>"))
+```
+
+The grammar is the existing SPL metadata grammar restricted to this exact ordered AST.
+All properties are mandatory; duplicates, unknown keys, extra forms, alternate versions, and sentence fragments in `source-theory` are errors.
+The embedded source URI also requires `field == format_reference(parse_reference(field))`; a mixed-case scheme in signed data is rejected.
+`elephant-report` is a reserved typed carrier recognised per signed entry, never through merged metadata.
+Mixed payloads containing the carrier are rejected atomically.
+Plaintext preview is the exported file itself; it contains only selected report fields and the existing outer signature envelope.
+Source premises, keys, roster, aliases, private trust policy, and full closure are absent.
+
+The file is canonical `entry_to_json` UTF-8 bytes with an optional single terminal LF.
+No BOM, duplicate JSON keys, unknown fields, alternate spacing, or appended data is accepted on import.
+Typed deserialisation followed by equality with canonical serialization establishes the canonical profile after size checks.
+Equality accepts exactly `canonical_json` or `canonical_json + LF`; the optional LF counts toward the size limit.
+No other trailing whitespace or second LF is accepted.
+Both strict JSON recognition and typed SPL recognition complete before append.
+The existing Entry signature format and cryptographic primitives are unchanged.
+
+File creation uses exclusive create, mode 0600, and atomic publication of a fully written file.
+An existing path or symlink is refused; no implicit stdout report export exists.
+Crash leftovers contain no published partial output; allocated clock values are never reused.
+
+Errors: usage → 1; inaccessible stores/output failure → 2; grammar, limits, or expiry failure → 3; signature → 4; reasoner exhaustion → 6.
+Success JSON: `v`, `source_reference`, `destination_reference`, `report_reference`, `publisher`, `tag`, `observed_at`, `expires_at`, `out`.
+Success text explicitly says the file is not yet imported.
+Implements: [[SPEC-008-theory-reports#REQ-701]], [[SPEC-008-theory-reports#NFR-701]].
+Verified by: [[SPEC-008-theory-reports#TEST-701]], [[SPEC-008-theory-reports#TEST-702]], [[SPEC-008-theory-reports#TEST-703]], [[SPEC-008-theory-reports#TEST-704]], [[SPEC-008-theory-reports#TEST-705]], [[SPEC-008-theory-reports#TEST-727]], [[SPEC-008-theory-reports#TEST-728]].
+
+### CON-702 — Inspect and import
+
+```text
+elephant report inspect <file> -t <destination> [--at <RFC3339>] [--json]
+elephant report import <file> -t <destination> [--json]
+elephant report show <report-sid> -t <destination> [--at <RFC3339>] [--json]
+```
+
+Input: bounded file bytes under [[SPEC-008-theory-reports#CON-701]] and explicit destination selector.
+Inspection verifies using the destination's existing key resolver; it never joins either theory or imports a key from the file.
+It shows the exact selected disclosure before import.
+Signature verification authenticates the reporter only within existing Entry verification semantics.
+`report show` reads a replicated destination record directly; it requires no copy of the original exported file.
+It returns expired and retracted reports as history, and explicit ambiguity for colliding receipts.
+It returns exit 8 for an absent receipt and exit 3 for an entry that is not a typed report.
+
+Import requires successful grammar recognition, destination matching, signature verification, HLC/receipt binding, and existing destination admission.
+Destination admission here means known-key Entry verification, not a new current-roster authorisation predicate.
+Known-key nonmembers and former members are not silently promoted to current members or trusted publishers.
+It rejects a report whose observation lies after the receiving evaluation time; the caller retries after clock correction or time catches up.
+It permits already expired reports as historical records, with `usable:false` in the response.
+The append path keeps the original reporter signature and uses existing single-writer persistence and encryption.
+It never calls the generic assert command to re-sign foreign bytes as the importer.
+Replicated reports pass the same typed-carrier checks during closure admission.
+Future-dated replicated records remain inactive until their observation time; replication need not discard otherwise valid signed history.
+
+Postcondition: at most one new identical Entry in the destination; no source write and no membership/keybook change.
+Duplicate input returns `imported:false`, `duplicate:true`, and its original reference.
+Receipt collisions return `ambiguous-report`, exit 3; no new entry is appended.
+Invalid signatures and unknown signer keys return exit 4; malformed input returns exit 3.
+Destination mismatch returns exit 3.
+Ordinary persistence and transport errors retain existing exit categories.
+Mutation rejects `--at`.
+
+Unambiguous inspect/show/import results use the ReportView schema below.
+Collision candidates reuse that schema with the stated ambiguity overrides; the ambiguous top-level result is separate.
+
+```text
+v: 1
+report_reference: canonical sentence URI in destination
+source_reference: canonical theory URI
+publisher: full verified signer DID
+publisher_source_atom: canonical agent atom
+literal: canonical SPL string
+literal_token: reversible symbol token
+tag: +D | +d | -D | -d | undetermined
+tag_token: definite | defeasible | not-definite | not-defeasible | undetermined
+observed_at, expires_at, evaluated_at: canonical UTC milliseconds
+evidence: reporter-attested
+state: ambiguous | retracted | not-yet-valid | expired | active
+usable: boolean
+reports_mode: off | observe | on
+stored: boolean
+premise_spl: canonical protected premise, or null when ambiguous
+imported, duplicate: boolean (import response only)
+```
+
+`usable` describes eligibility with mode `on`; it does not imply that mode is enabled or a bridge accepts the report.
+Inspection considers matching local journal entries and withdrawals as well as the file itself.
+If the file is absent from the journal, inspection labels `stored:false`; show always labels `stored:true`.
+Successful import always labels `stored:true`, including an identical duplicate.
+These stored flags are part of the shared schema.
+Human output places evidence status, expiry, mode, and `not imported` or `stored` beside the selected result.
+An active report with mode `off` explicitly says `Report reasoning is off; no premise supplied`.
+Output uses textual states without relying on colour, preserves copyable references, and avoids requiring manual token transcription.
+Unknown-signer errors direct operators to verify destination identity records through existing membership procedures; the file itself never supplies trusted keys.
+Inspection and show use explicit `--at` when supplied; otherwise the shell samples the evaluation time once.
+Neither read operation changes journals, clock allocation, membership, or keybooks.
+An ambiguous inspect/show result uses a separate top-level schema: `v`, `report_reference`, `state:ambiguous`, `usable:false`, `evaluated_at`, `reports_mode`, and `candidates`.
+Each candidate contains `kind:report|other`, canonical Entry SHA-256 `digest`, verified `publisher`, and `performative`.
+A `report` candidate additionally contains `report:ReportView` with `state:ambiguous`, `usable:false`, and `premise_spl:null`.
+An `other` candidate has no report fields; it identifies the ordinary verified act that collides without inventing report testimony.
+Candidates sort by digest; ambiguity returns exit 3 and never selects a top-level publisher.
+Import rejects the same collision before append, using the ordinary structured error channel with candidate digests.
+Implements: [[SPEC-008-theory-reports#REQ-702]], [[SPEC-008-theory-reports#REQ-703]].
+Verified by: [[SPEC-008-theory-reports#TEST-706]], [[SPEC-008-theory-reports#TEST-707]], [[SPEC-008-theory-reports#TEST-708]], [[SPEC-008-theory-reports#TEST-709]], [[SPEC-008-theory-reports#TEST-710]], [[SPEC-008-theory-reports#TEST-711]], [[SPEC-008-theory-reports#TEST-712]], [[SPEC-008-theory-reports#TEST-713]].
+
+### CON-703 — Protected report projection
+
+Interface: `project_reports(admitted_entries, retractions, evaluation_time, reports_mode) -> ReportView + synthetic premises`.
+This pure function receives verified typed inputs.
+It does not resolve source URIs or read source stores.
+
+Mode grammar: `off | observe | on`, supplied through a global `--reports` option; default `off`.
+Projection and the reserved-predicate admission rule apply only to genesis-declared `(closure 3)` theories.
+Closure 3 extends closure 2 in [[SPEC-001-elephant-core#ADR-013]]; implementing that base contract is an explicit dependency, not an assumed shipped capability.
+New creation uses `elephant theory create <name> --closure 3`; existing default creation remains unchanged.
+For closure 1 or 2, `on` is rejected with exit 2; report inspection and `observe` remain read-only metadata projections without new admission restrictions.
+Report import for logical use requires a closure-3 destination and otherwise returns exit 2 before append.
+The export command likewise requires a closure-3 destination.
+The mode is explicit on every closure consumer, including status, explain, why-not, require, what-if, tasks, commitments, and watch.
+Daemon requests carry the mode explicitly; caches and watches key by mode and evaluation context.
+An older daemon that cannot accept this field returns an unsupported-feature error for `observe` or `on`.
+It does not silently answer in another mode.
+No mode changes journal admission or signature checks.
+
+Report states, in precedence order: `ambiguous`, `retracted`, `not-yet-valid`, `expired`, `active`.
+After ordinary Entry verification, group candidates by destination theory and derived receipt ID before report-type filtering.
+Byte-identical entries collapse; distinct valid entries, including non-report acts, make the receipt ambiguous.
+All report candidates in an ambiguous group emit no premise, regardless of signer or temporal eligibility.
+History lists each candidate with its full SHA-256 digest of canonical Entry JSON; the short URI remains ambiguous.
+A same-signer retraction targeting a colliding receipt applies to every matching entry from that signer, following existing E1 semantics.
+Ambiguity remains recorded after retraction; recovery requires a newly allocated unambiguous report receipt.
+Malformed or cryptographically rejected records are quarantined and never enter this state machine.
+The reader's known valid retractions are evaluated under the existing historical-time rules.
+Historical queries do not erase retractions the reader learned later if their effective timestamps precede the requested time.
+`off` emits no report diagnostics or premises; explicit `report inspect` remains available.
+`observe` emits diagnostics only; `on` also emits active premises.
+
+The synthetic predicate is:
+
+```text
+(report-result <report-sid> <publisher-source-atom> <source-theory-id>
+               <literal-token> <tag-token>)
+tag-token = definite | defeasible | not-defeasible | not-definite | undetermined
+literal-token = lit-<lowercase hex encoding of canonical literal UTF-8 bytes>
+```
+
+Hex encoding is reversible and avoids a new Spindle literal or string representation.
+The view returns `literal`, `literal_token`, `publisher`, `publisher_source_atom`, `source_reference`, and `report_reference` together.
+No user needs to compute the token manually.
+For a signer `did:crdt:<64 lowercase hex>`, the source atom is exactly `agent:<the same full 64 lowercase hex>`.
+No display name, local alias, truncated prefix, or file-supplied publisher string participates in that mapping.
+Other DID methods are unsupported by this initial profile; their future mapping requires a versioned contract.
+Synthetic facts carry the report's verified publisher as provenance and the destination receipt as their evidence ID.
+The interpreter emits them before ordinary reasoning; it never synthesises the reported literal itself.
+
+`report-result` is reserved at every arity and polarity.
+User payloads can refer to it only in rule bodies and query/commitment/request goals.
+Facts, rule heads, defeater heads, predicate declarations, and metadata that redefine the family are rejected at production and quarantined during ingestion.
+Rules cannot fabricate, retract, or negate the synthetic relation.
+Inline claims cannot fabricate its provenance; existing claims restrictions still apply.
+The reserved check applies to all payload positions and local policy inputs before any logical assembly, in every reports mode.
+Within closure 3, it also rejects modal, temporal, term-nested, and annotation-position occurrences outside the explicitly permitted positive body/goal forms.
+Only reports passing typed admission can produce this relation.
+
+The feature extends the closure admission/projection seam in [[SPEC-001-elephant-core#CON-003]].
+It does not require a Spindle import directive or Spindle network access.
+Destination authors deliberately match publisher, source, literal, and tag in bridge rules.
+Matching a specific report SID pins one report; matching an unconstrained SID accepts any matching active report.
+This choice is visible in the rule, not an implicit importer default.
+
+Explain output includes the signed report reference and labels source verification `reporter-attested`.
+It distinguishes current destination evaluation time from the report's source observation time.
+No automatic traversal into the private source proof occurs.
+
+Implements: [[SPEC-008-theory-reports#REQ-703]], [[SPEC-008-theory-reports#REQ-704]], [[SPEC-008-theory-reports#REQ-705]], [[SPEC-008-theory-reports#REQ-706]], [[SPEC-008-theory-reports#NFR-702]].
+Verified by: [[SPEC-008-theory-reports#Tests]].
+
+## Worked example
+
+Alice holds QA and Release; Bob holds Release only.
+QA derives `(passed build-42)` defeasibly from local evidence.
+At `2026-09-16T02:00:00.000Z`, Alice exports that result for Release, expiring at `2026-09-16T03:00:00.000Z`.
+The times are illustrative policy choices, not protocol defaults.
+
+```sh
+elephant report export '(passed build-42)' -t qa --to release \
+  --expires-at 2026-09-16T03:00:00.000Z --out qa-build-42.report.json
+elephant report inspect qa-build-42.report.json -t release --json
+elephant report import qa-build-42.report.json -t release --json
+```
+
+The exported file is an explicit selected disclosure.
+After import, Release contains Alice's destination-bound signed statement, not QA's private premises.
+Bob verifies Alice's signature from Release's existing identity records.
+He cannot independently reproduce QA's conclusion from the file.
+
+At an evaluation time before expiry, `--reports on` emits this premise (abbreviations below are explanatory placeholders):
+
+```text
+(report-result s-REPORT agent:ALICE QA-ID lit-LITERAL-HEX defeasible)
+```
+
+Release authors a ground bridge rule using the exact token and identities returned by inspection:
+
+```text
+(normally accept-qa-build-42
+  (report-result s-REPORT agent:ALICE QA-ID lit-LITERAL-HEX defeasible)
+  (qa-approved build-42))
+(normally release-build-42
+  (and (qa-approved build-42) (deployment-window-open build-42))
+  (ready-to-release build-42))
+```
+
+These examples illustrate shape; placeholders are not runnable SPL.
+After checking the report's displayed publisher, source, literal, tag, and expiry, the operator can use its returned premise directly:
+
+```sh
+# REPORT_ID is the actual receipt printed by import or received in the journal.
+elephant report show "$REPORT_ID" -t release --reports observe --json > report-view.json
+report_premise=$(jq -er '.premise_spl // error("ambiguous report")' report-view.json)
+elephant assert "(normally accept-qa-build-42 $report_premise (qa-approved build-42))" -t release
+elephant assert '(normally release-build-42 (and (qa-approved build-42) (deployment-window-open build-42)) (ready-to-release build-42))' -t release
+elephant status -t release --reports on --json
+elephant explain '(ready-to-release build-42)' -t release --reports on --json
+```
+
+The returned premise is canonical interpreter-produced SPL; this example does not splice unrecognised report-file contents into a rule.
+Creating the bridge remains an explicit endorsement by its author.
+Deployment-window evidence is a separate local prerequisite; absent evidence keeps readiness unproven.
+The bridge deliberately pins Alice's particular report and accepts a defeasible tag.
+A rule accepting both positive tags uses separate explicit rules or a documented local normalisation rule.
+Existing destination opposition can defeat the bridge conclusion.
+
+At expiry, the report premise disappears on the next evaluation.
+Release readiness loses this support; other independent support remains possible.
+No `(not (passed build-42))` fact is created.
+If QA changes earlier, Release does not learn that automatically.
+Alice can retract the imported report immediately in Release, or let its explicitly chosen validity end.
+If Alice publishes a replacement, the pinned bridge does not silently switch to it.
+
+## Decisions
+
+### ADR-701 — Reuse the signed Entry boundary
+
+Decision: export an ordinary destination-bound Assert Entry containing a closed metadata record.
+This composes existing signing, key resolution, encryption on import, append-only storage, and signer retraction.
+It avoids a new signature algorithm, detached identity trust store, or foreign-theory admission exception.
+The exporter needs destination participation; direct publication by an unknown external source identity is deferred.
+The importer verifies testimony, not organisational source-export authority.
+Placement: Elephant owns all these responsibilities; Spindle receives only ordinary typed logical input.
+Simplicity Ladder: existing components plus a typed metadata projection.
+
+### ADR-702 — Reports are observations, not source proofs
+
+Decision: transmit a selected literal and reported tag with its observation time.
+Source rule import is a distinct semantic operation and has no command in this design.
+The existing closure fingerprint excludes provenance, so it cannot authenticate a source proof or identify its complete inputs.
+A future portable proof needs a separately specified snapshot, evaluation profile, public-key evidence, and disclosure policy.
+The initial immutable citation is the signed destination report itself, referenced through [[SPEC-007-theory-references#CON-601]].
+
+### ADR-703 — Explicit freshness instead of implied synchrony
+
+Decision: require an absolute expiry and manual publication/withdrawal.
+The recipient can evaluate offline with a clear limit on how long a report supplies evidence.
+Automatic invalidation cannot be promised across disconnected replicas without a delivery and freshness protocol.
+No default expiry is chosen because the risk tolerance differs between a release and a research citation.
+// SIMPLIFY: no live upstream following; a later subscription specification owns delivery, revocation, cycles, and freshness (trace: ADR-703).
+
+### ADR-704 — Protected observation projection
+
+Decision: derive publisher-bearing report premises from verified envelopes.
+An ordinary user-asserted `reported-by` fact permits impersonation in rules.
+A reserved predicate closes that gap without changing Spindle's logic.
+This adds an admission restriction and therefore requires observe-mode inspection, compatibility tests, and a human security review.
+The literal token reuses ordinary symbols; this is minimum encoding work rather than a new Spindle term type.
+The reversible token trades readability inside SPL for unambiguous round-trip identity; CLI output supplies the readable literal beside it.
+
+### ADR-705 — Temporal verification and applicability
+
+The boundary is a time-parameterised pure projection, not a scheduled invalidation service.
+At every query, the predicate in [[SPEC-008-theory-reports#REQ-704]] decides eligibility.
+Temporal safety uses discrete evaluation traces with millisecond timestamps:
+
+```text
+signal OBS-701.emitted       : Boolean
+signal OBS-701.in_window     : Boolean
+signal OBS-701.retracted     : Boolean
+signal OBS-701.mode_on       : Boolean
+atom window_ok  = OBS-701.in_window
+atom live_ok    = !OBS-701.retracted
+atom enabled    = OBS-701.mode_on
+property eligibility = always (OBS-701.emitted => window_ok && live_ok && enabled)
+```
+
+The implementation owner uses property-based trace generation over the pure model to exemplify and falsify this safety property.
+Before approval, a standalone model check records a satisfying expiry trace and rejects a trace emitting at the expiry boundary.
+No timed push notification or invalidation latency is claimed.
+Watch streams recompute on their existing evaluation triggers; each emitted result includes its evaluation time and report validity limit.
+Consumers that act later require a fresh query; cached watch output is not an unbounded authorisation.
+
+## Purity boundary and compatibility
+
+Pure core: typed report recognition, time eligibility, provenance projection, protected-position checks, and reversible literal encoding.
+Shell: source capture, explicit time sampling, clock allocation, output file creation, destination import, and daemon routing.
+Dependencies point shell → core; the core receives time, mode, and keys as explicit inputs.
+No source I/O occurs during destination closure.
+Enforcement: module dependency review, no-fetch tests, and property-based projection tests.
+
+Export/import are explicit opt-in commands.
+Existing closure-1/2 theories retain their previous admission and reasoning semantics, including any ordinary predicate named `report-result`.
+Opt-in requires a newly created closure-3 successor theory; genesis declarations are immutable.
+Operators receive the new namespace and migration notice before choosing successor creation.
+Before migrating user rules, operators inspect them for newly reserved names.
+Rollback sets mode `off` for closure 3, or returns operations to the unchanged predecessor theory; no journal is rewritten.
+Version-aware old readers refuse unsupported closure 3.
+Pre-version-gate binaries cannot enforce this rule; no compatibility guarantee is claimed for them, matching [[SPEC-001-elephant-core#ADR-013]].
+Shared report-dependent automation requires version-aware closure-3 readers and the same explicit mode.
+The mode accompanies every result to expose this compatibility boundary.
+Existing non-report theories remain valid; incompatible report-specific input fails explicitly.
+
+## Tests
+
+This matrix specifies acceptance; it does not claim implementation execution.
+Core covers export/import, signature and scope boundaries, clock endpoints, impersonation, and the QA example using temporary stores.
+Depth covers parser fuzzing, merge permutations, crash recovery, and real daemon/watch integration.
+The implementation owner writes core tests first and records their red runs.
+Required mutations remove destination binding, reporter derivation, expiry comparison, and the protected-head guard.
+Each corresponding prohibited-action test must detect its mutation before implementation acceptance.
+
+### TEST-701 — Export selected observation
+
+Validates: [[SPEC-008-theory-reports#REQ-701]]. Type: positive. Tier: core.
+Capture a QA closure, export one literal to Release, and inspect the signed fields, tag precedence, observation time, destination, and expiry.
+
+### TEST-702 — Reject invalid selection
+
+Validates: [[SPEC-008-theory-reports#REQ-701]]. Type: negative-input. Tier: core.
+Reject missing destination, wildcard, variable, extra literal, modal or temporal literal, unavailable source, equal theories, and nonfuture expiry.
+
+### TEST-703 — Export the actual observed tag
+
+Validates: [[SPEC-008-theory-reports#REQ-701]]. Type: negative-output. Tier: core.
+Use fixtures with +D and +d together, -D and +d together, nonprovability, and absence; require the specified selection and no complement inference.
+
+### TEST-704 — No unselected disclosure
+
+Validates: [[SPEC-008-theory-reports#REQ-701]]. Type: prohibited-action. Tier: core.
+Populate private premises, roster, aliases, trust policy, and keys; assert that none appears in exported bytes.
+
+### TEST-705 — Export does not publish
+
+Validates: [[SPEC-008-theory-reports#REQ-701]]. Type: scope-invariant. Tier: core.
+Compare both journals before and after export; allow only the requested file and clock-allocation state to change.
+
+### TEST-706 — Import and retry
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: positive. Tier: core.
+Import a canonical signed report twice; require one destination entry, unchanged original signature, and duplicate:true on retry.
+
+### TEST-707 — Reject invalid envelope or schema
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: negative-input. Tier: core.
+Reject tampering, unknown signer, wrong destination, duplicate JSON/SPL fields, noncanonical encoding, unknown version, mixed forms, and future observation.
+
+### TEST-708 — Do not reattribute import
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: negative-output. Tier: core.
+Have Bob import Alice’s report; require Alice as publisher and identical signed envelope bytes.
+
+### TEST-709 — No append on rejection
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: prohibited-action. Tier: core.
+Submit each invalid signed-report fixture; assert no new entry, no imported key, and no fetched membership.
+
+### TEST-710 — Destination-only append
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: scope-invariant. Tier: core.
+Import into Release; assert unchanged QA journal, rosters, keybooks, identities, and unrelated files.
+
+### TEST-711 — Expose evidence level
+
+Validates: [[SPEC-008-theory-reports#REQ-703]]. Type: positive. Tier: core.
+Inspect a valid report as a reader without source access; require reporter-attested, publisher, selected result, observation, expiry, and report reference.
+
+### TEST-712 — No fabricated source verification
+
+Validates: [[SPEC-008-theory-reports#REQ-703]]. Type: negative-output. Tier: core.
+Use a correctly signed report whose source claim is false; require testimony status rather than verified source truth or export-authority status.
+
+### TEST-713 — No source proof retrieval
+
+Validates: [[SPEC-008-theory-reports#REQ-703]]. Type: prohibited-action. Tier: core.
+Inspect and explain with source access absent; assert no source fetch, join, proof download, or disclosure request.
+
+### TEST-714 — Evaluate time boundaries
+
+Validates: [[SPEC-008-theory-reports#REQ-704]]. Type: positive. Tier: core.
+Evaluate before observation, at observation, just before expiry, and at expiry; require only the half-open interval to supply a premise.
+
+### TEST-715 — Reject invalid interval
+
+Validates: [[SPEC-008-theory-reports#REQ-704]]. Type: negative-input. Tier: core.
+Recognise reports with equal endpoints, reversed endpoints, malformed dates, overflow, offsets, and missing milliseconds; reject before projection.
+
+### TEST-716 — No implicit supersession
+
+Validates: [[SPEC-008-theory-reports#REQ-704]]. Type: negative-output. Tier: core.
+Import overlapping reports and retract the newer one; require the independently active older report to remain unless separately withdrawn or expired.
+
+### TEST-717 — Withdrawal does not negate
+
+Validates: [[SPEC-008-theory-reports#REQ-704]]. Type: prohibited-action. Tier: core.
+Retract or expire the sole report; assert absence of its premise and absence of any generated complement fact.
+
+### TEST-718 — Source update is not a subscription
+
+Validates: [[SPEC-008-theory-reports#REQ-704]]. Type: scope-invariant. Tier: core.
+Change source facts while holding destination inputs fixed; require unchanged destination report state and no source access during evaluation.
+
+### TEST-719 — Explicit bridge supports readiness
+
+Validates: [[SPEC-008-theory-reports#REQ-705]]. Type: positive. Tier: core.
+Use the QA example with the exact returned literal token, report receipt, reporter, source, and tag; derive local readiness through the authored rules.
+
+### TEST-720 — Reject synthetic-head forgery
+
+Validates: [[SPEC-008-theory-reports#REQ-705]]. Type: negative-input. Tier: core.
+Submit report-result in facts, strict/defeasible/defeater heads, wrong arities, negated forms, declarations, metadata redefinitions, and local policy; reject or quarantine.
+
+### TEST-721 — Preserve reported versus concluded
+
+Validates: [[SPEC-008-theory-reports#REQ-705]]. Type: negative-output. Tier: core.
+Import a positive report without a bridge; require the report premise but no automatic source literal or release approval.
+
+### TEST-722 — No publisher impersonation
+
+Validates: [[SPEC-008-theory-reports#REQ-705]]. Type: prohibited-action. Tier: core.
+Have Mallory sign a record naming Alice through extra fields or authored synthetic facts; assert no report-result premise attributed to Alice.
+
+### TEST-723 — No imported rule execution
+
+Validates: [[SPEC-008-theory-reports#REQ-705]]. Type: prohibited-action. Tier: core.
+Embed source rules, preferences, claims, or trust directives in the carrier; assert no executable contribution from the entire rejected entry.
+
+### TEST-724 — Mode controls projection
+
+Validates: [[SPEC-008-theory-reports#REQ-706]]. Type: positive. Tier: core.
+Evaluate the same destination in off, observe, and on; require diagnostics and premises exactly as specified and immediate next-query rollback.
+
+### TEST-725 — Reject unsupported mode
+
+Validates: [[SPEC-008-theory-reports#REQ-706]]. Type: negative-input. Tier: core.
+Reject unknown mode values and an older daemon receiving observe/on; require an explicit error rather than fallback.
+
+### TEST-726 — Mode never rewrites history
+
+Validates: [[SPEC-008-theory-reports#REQ-706]]. Type: scope-invariant. Tier: core.
+Toggle modes and compare signed journals and keybooks byte-for-byte; require unchanged admission policy and recorded result mode.
+
+### TEST-727 — Accept exact byte limits
+
+Validates: [[SPEC-008-theory-reports#NFR-701]]. Type: positive. Tier: core.
+Construct valid records at each allowed byte boundary; require recognition without truncation.
+Exercise canonical JSON both without LF and with exactly one terminal LF counted within the limit.
+
+### TEST-728 — Reject oversized input
+
+Validates: [[SPEC-008-theory-reports#NFR-701]]. Type: negative-input. Tier: core.
+Exceed each byte limit by one and append trailing data; require rejection before signature-dependent action or append.
+Reject two terminal LFs and other trailing whitespace even when total bytes remain below the limit.
+
+### TEST-729 — Order-independent projection
+
+Validates: [[SPEC-008-theory-reports#NFR-702]]. Type: property / depth. Tier: depth.
+Permute report and retraction arrival, include duplicate replicas and receipt collisions, and fix time/mode/keys; require identical final projection.
+
+### TEST-730 — Report recogniser robustness
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: fuzz / depth. Tier: depth.
+Fuzz JSON, CBCL, SPL carriers, dates, and literal recognition; require no panic, bounded input handling, and no partial append.
+
+### TEST-731 — Literal token round trip
+
+Validates: [[SPEC-008-theory-reports#REQ-705]]. Type: property / depth. Tier: depth.
+Generate allowed ground literals; require token decoding to recover canonical UTF-8 and distinct canonical bytes to produce distinct tokens.
+
+### TEST-732 — Crash-safe file publication
+
+Validates: [[SPEC-008-theory-reports#REQ-701]]. Type: scope-invariant / depth. Tier: depth.
+Interrupt export around allocation, creation, and rename; require no published partial file, no overwrite, and no reused receipt allocation.
+
+### TEST-733 — Daemon and watch parity
+
+Validates: [[SPEC-008-theory-reports#REQ-706]]. Type: positive / depth. Tier: depth.
+Compare direct and daemon queries at fixed mode/time; verify mode-separated caches and explicit evaluation timestamps on watch results.
+
+### TEST-734 — Temporal safety exemplification
+
+Validates: [[SPEC-008-theory-reports#REQ-704]]. Type: model. Tier: core.
+Generate an active observation followed by expiry; accept the correct trace and reject emission at the exact expiry boundary.
+
+
+### TEST-735 — Known key is not roster authority
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: positive. Tier: core.
+Import a valid report from a destination-known key outside the current roster; require testimony status without membership or publisher acceptance changes.
+
+### TEST-736 — Canonical publisher across aliases
+
+Validates: [[SPEC-008-theory-reports#REQ-705]]. Type: negative-output. Tier: core.
+Give the same DID different display aliases on separate replicas; require the identical full agent atom and identical bridge matching.
+
+### TEST-737 — Replication collision never projects
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: prohibited-action. Tier: core.
+Merge distinct valid reports sharing a receipt, including different signers and a non-report collision; require no report premise for the group.
+Require discriminated report/other candidate output without fabricating report fields for the non-report entry.
+
+### TEST-738 — Colliding retractions follow E1
+
+Validates: [[SPEC-008-theory-reports#REQ-704]]. Type: positive. Tier: core.
+Retract a receipt shared by same-signer and different-signer records; mark only same-signer records withdrawn and keep the entire group ambiguous.
+
+### TEST-739 — Signed URI fields are canonical
+
+Validates: [[SPEC-008-theory-reports#REQ-702]]. Type: negative-input. Tier: core.
+Sign a report with a mixed-case source scheme; reject the report despite its independently valid CLI URI spelling.
+
+### TEST-740 — Semantic version preserves predecessors
+
+Validates: [[SPEC-008-theory-reports#REQ-706]]. Type: scope-invariant. Tier: core.
+Evaluate authored report-result facts in closure 1/2 under off and observe; preserve old semantics and reject on without rewriting any journal.
+
+### TEST-741 — Unknown closure versions fail closed
+
+Validates: [[SPEC-008-theory-reports#REQ-706]]. Type: negative-input. Tier: core.
+Open closure 3 using a version-aware older reader; require unsupported-version failure rather than a misleading old closure.
+
+### TEST-742 — Observed time is evaluation time
+
+Validates: [[SPEC-008-theory-reports#REQ-701]]. Type: positive. Tier: core.
+Capture a source containing a future-HLC entry; compare the exported tag against ordinary source closure at the allocated observation time.
+
+### TEST-743 — Historical evaluation uses current knowledge
+
+Validates: [[SPEC-008-theory-reports#REQ-704]]. Type: positive. Tier: core.
+Add a later-learned retraction effective before the requested time; require changed historical output only when the explicit known input set changes.
+
+### TEST-744 — Inspect a replicated report
+
+Validates: [[SPEC-008-theory-reports#REQ-703]]. Type: positive. Tier: core.
+Give Bob only the destination journal; report show returns the complete schema for active, expired, and withdrawn reports without an export file.
+For mixed collisions, require the separate ambiguous schema and exit 3.
+
+### TEST-745 — Off mode is visible to operators
+
+Validates: [[SPEC-008-theory-reports#REQ-706]]. Type: negative-output. Tier: core.
+Import an eligible report with default mode; require no premise and a nearby human cue that report reasoning is off.
+
+### TEST-746 — Copyable non-colour output
+
+Validates: [[SPEC-008-theory-reports#REQ-703]]. Type: positive. Tier: core.
+Inspect reports under narrow non-colour terminals and JSON; preserve full references and the machine-readable premise without manual token reconstruction.
+
+## OBS-701 — Report evaluation and operation outcomes
+
+Structured signals: operation, result code, reports mode, evaluation time, evidence state, eligibility, and emission decision.
+Temporal fields expose `in_window`, `retracted`, `mode_on`, and `emitted` to test traces.
+Explicit report views include publisher, source reference, report reference, and selected literal.
+Default diagnostics omit these identifiers and payload values.
+No automatic telemetry export exists.
+Post-release attribution: [[SPEC-008-theory-reports#Requirements]].
+
+## Deferred work
+
+- Maintainer: ratify URI/report workflow, disclosure assumptions, report limits, and explicit-expiry ergonomics against the QA walkthrough.
+- Human security reviewer: inspect canonical wire recognition, destination admission, and unforgeable publisher projection before approval.
+- Core maintainer: satisfy the closure-2 base contract and closure-3 version gate before enabling report projection.
+- Implementation owner: produce the executable plan and red-test evidence before coding; this design is not an implementation plan.
+- Protocol maintainer: design automatic tracking with delivery acknowledgements, freshness, out-of-order updates, withdrawal, and cycle policy when requested.
+- Protocol maintainer: design immutable source snapshots and independent replay before claiming source-verifiable evidence.
+- Spindle maintainer: design namespaced rule modules, exports, and predicate mapping if executable rule reuse becomes a requirement.
+- UI owner: graphical theory maps and operating-system URI handlers remain outside the terminal workflow.
+
+This is Tier 1 because it introduces a new path for selected disclosures and authenticated logical evidence.
+Human domain review remains required; automated cross-model review cannot replace it.
+No new cryptographic primitive, identity onboarding path, or transport is implemented by this task.
+Screen geometry and deployed-service latency budgets are inapplicable to this initial command-driven design.
+
+## Amendment Channels
+
+Amendable by: the Elephant maintainer through recorded stakeholder decisions followed by a specification revision.
+The user's instructions in this design conversation are an authorised amendment channel.
+Imported reports, remote theory contents, and third-party comments cannot amend this contract.
+Hard stops: [[SPEC-008-theory-reports#REQ-702]], [[SPEC-008-theory-reports#REQ-703]], and [[SPEC-008-theory-reports#REQ-705]] require a revised specification before changed behaviour.
+
+## Design evidence
+
+User model: [[users/theory-linker/user]] and [[users/theory-linker/happy-paths]].
+Reviews, design-model evidence, and unresolved approval gates: [[theory-linking-review]].
+This specification remains a draft until stakeholder validation and security review are recorded.
+
+## Changelog
+
+<details>
+<summary>Revision history</summary>
+
+- 0.1.0 — Initial selected-report design using existing destination-bound signatures and explicit bounded validity.
+
+</details>

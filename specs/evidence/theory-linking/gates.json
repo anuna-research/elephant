@@ -1,0 +1,77 @@
+{
+  "phase": "design draft",
+  "scope": "references and explicitly published expiring reports; approved by stakeholder choice",
+  "implementation_tests_executed": false,
+  "gates": [
+    {
+      "gate": "scope selection",
+      "mechanism": "stakeholder reply",
+      "result": "pass",
+      "evidence": "User selected References + published reports; theory-linking-review.md records scope-only validation"
+    },
+    {
+      "gate": "adversarial design review",
+      "mechanism": "gpt-5.6-sol fresh-context reviewer",
+      "result": "pass",
+      "evidence": "Final bounded review /root/adversarial_spec_review: no blocking/significant findings; theory-linking-review.md"
+    },
+    {
+      "gate": "comprehension",
+      "mechanism": "fresh Orientation-only reviewer",
+      "result": "pass",
+      "evidence": "/root/comprehension_gate_r1; retained first failure and repair in theory-linking-review.md"
+    },
+    {
+      "gate": "synthetic user command paths",
+      "mechanism": "independent specification-only walkthrough",
+      "result": "pass",
+      "evidence": "/root/synthetic_user repeated walkthrough; nonblocking human usability work retained"
+    },
+    {
+      "gate": "new-spec traceability and finite eligibility model",
+      "mechanism": "python3 specs/evidence/theory-linking/check-design.py",
+      "result": "pass",
+      "evidence": "design-check.json; design only, not product verification"
+    },
+    {
+      "gate": "controlled prose",
+      "mechanism": "usdd-lint.sh --json",
+      "result": "pass",
+      "evidence": "prose-lint.json"
+    },
+    {
+      "gate": "new unresolved-link regression",
+      "mechanism": "baseline source/target pair comparison",
+      "result": "pass",
+      "evidence": "vault-delta.json"
+    },
+    {
+      "gate": "whole vault check",
+      "mechanism": "zetl -d specs --no-cache check --dead-links; check --fail-on error",
+      "result": "fail",
+      "evidence": "zetl-baseline.json, zetl-dead-links.json, zetl-ci.json; pre-existing unresolved links",
+      "owner": "Elephant vault maintainer"
+    },
+    {
+      "gate": "full stakeholder design validation",
+      "mechanism": "human review of draft contracts",
+      "result": "unverified",
+      "evidence": "scope choice is narrower than full design approval",
+      "owner": "Elephant maintainer"
+    },
+    {
+      "gate": "security domain review",
+      "mechanism": "human security review",
+      "result": "unverified",
+      "evidence": "Not performed; report draft remains Tier 1",
+      "owner": "human security reviewer"
+    },
+    {
+      "gate": "implementation readiness",
+      "mechanism": "closure-2 dependency, executable plan, red tests and product checks",
+      "result": "unverified",
+      "evidence": "No product implementation requested or performed",
+      "owner": "implementation owner"
+    }
+  ]
+}

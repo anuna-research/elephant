@@ -1,0 +1,473 @@
+---
+id: SPEC-007
+title: Portable theory references and signed links
+version: 0.1.0
+status: draft
+date: 2026-09-16
+tier: 2
+---
+
+# SPEC-007 — Portable theory references and signed links
+
+## Orientation
+
+Intent: Connect related theories and individual statements without copying their contents or changing their conclusions.
+A [[Theory Reference]] gives a shared identity to something that local aliases cannot identify across machines.
+
+Metaphor: a library catalogue entry points to a book; possessing its reference does not grant access to the book.
+
+Structure (data flow; module dependencies point from the shell toward the pure recogniser):
+
+```text
+CLI / signed link entry
+          |
+          v
+Reference recogniser (CON-601) --> typed TheoryRef
+                                         |
+                                         v
+Local resolver / link projection (CON-602, CON-603)
+          |                              |
+          v                              v
+accessible target view             outgoing / backlinks
+```
+
+Decisions: [[SPEC-007-theory-references#ADR-601]] uses an Elephant URI and existing stable IDs.
+[[SPEC-007-theory-references#ADR-602]] keeps signed links outside logical inference.
+[[SPEC-007-theory-references#ADR-603]] resolves locally without network discovery.
+
+Load-bearing: [[SPEC-007-theory-references#REQ-601]], [[SPEC-007-theory-references#REQ-603]], and [[SPEC-007-theory-references#REQ-605]].
+
+Controls:
+- [[SPEC-007-theory-references#REQ-601]] accepts only the declared URI profile; aliases are producer inputs, never persisted identities.
+- [[SPEC-007-theory-references#REQ-602]] rejects malformed links atomically; only their signer can retract them.
+- [[SPEC-007-theory-references#REQ-603]] forbids reference-triggered fetching, joins, key exchange, or foreign-content copying.
+- [[SPEC-007-theory-references#REQ-604]] distinguishes unavailable, missing, quarantined, retracted, and ambiguous targets; ambiguity never selects a winner.
+- [[SPEC-007-theory-references#REQ-605]] gives links no automatic inferential effect, including links named `supports` or `depends-on`.
+- [[SPEC-007-theory-references#REQ-606]] labels backlinks as local and incomplete; target content requires an explicit follow operation.
+
+Open: Human acceptance of the URI spelling remains with the maintainer.
+Scheme registration and operating-system handlers remain deferred to the maintainer; neither is claimed here.
+Reasoning from exported results belongs to [[SPEC-008-theory-reports]], which has a separate security review gate.
+
+Detail: Reviewer → [[SPEC-007-theory-references#Decisions]] → [[SPEC-007-theory-references#Open decisions]].
+Implementer → [[SPEC-007-theory-references#Contracts]] → [[SPEC-007-theory-references#Tests]] → requirement links.
+Stakeholder → [[users/theory-linker/happy-paths#Connect evidence]] → [[SPEC-007-theory-references#Requirements]].
+
+The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL have their BCP 14 meaning only in capitals.
+
+## Intent and failure modes
+
+This design follows the request to link Elephant theories and the QA-to-release example in [[users/theory-linker/happy-paths]].
+It does not derive requirements from the current implementation.
+Existing code establishes feasibility, compatibility constraints, and reuse opportunities.
+
+### Unportable identity
+
+Local aliases differ between machines.
+A pasted sentence identifier omits the theory needed to locate its signed entry.
+This breaks evidence navigation even when both participants hold the same theories.
+
+### Accidental inference
+
+A relationship named `supports` looks authoritative without specifying who asserted it or whether it changes reasoning.
+Treating navigation as logical import erases the receiving theory's decision about what evidence to accept.
+
+### Boundary crossing
+
+Following a reference can accidentally become a fetch, membership request, or disclosure of a private target's contents.
+The initial resolver reads only theories already accessible in the chosen local store.
+
+### False completeness
+
+An empty backlink list cannot establish that nobody references a theory.
+Other theories and offline replicas remain invisible to the reader.
+
+## Scope
+
+This specification covers theory and sentence references, signed relationships, local resolution, and backlink discovery.
+It excludes rule imports, predicate-addressing syntax, conclusion-addressing syntax, global discovery, and snapshot retrieval.
+An immutable signed report in [[SPEC-008-theory-reports]] supplies a concrete citation target for a changing conclusion.
+
+## Requirements
+
+### REQ-601 — Portable identity
+
+The system SHALL encode theory and sentence references according to [[SPEC-007-theory-references#CON-601]].
+The producer resolves an alias once; the stored representation contains the full theory ID.
+Default target: the whole theory; a sentence selector is explicit.
+This matches [[users/theory-linker/happy-paths#Connect evidence]] without introducing a global alias registry.
+
+Trace: [[SPEC-007-theory-references#Unportable identity]]; [[SPEC-007-theory-references#CON-601]]; [[SPEC-007-theory-references#TEST-601]]; [[SPEC-007-theory-references#TEST-602]]; [[SPEC-007-theory-references#TEST-603]]; [[SPEC-007-theory-references#OBS-601]].
+
+### REQ-602 — Signed relationship lifecycle
+
+The system SHALL represent each relationship as an individually retractable signed entry in the referring theory.
+The exact payload and mutation boundary are [[SPEC-007-theory-references#CON-602]].
+The entry signer is the relationship author; target authorship is independent.
+The existing same-signer retraction rule applies.
+The producer rejects self-links, identical endpoints, and malformed records before appending anything.
+Duplicate relationships remain separate attributable entries; the view does not silently merge authors.
+
+Trace: [[SPEC-007-theory-references#Accidental inference]]; [[SPEC-007-theory-references#CON-602]]; [[SPEC-007-theory-references#TEST-604]]; [[SPEC-007-theory-references#TEST-605]]; [[SPEC-007-theory-references#TEST-606]]; [[SPEC-007-theory-references#TEST-607]]; [[SPEC-007-theory-references#TEST-608]]; [[SPEC-007-theory-references#OBS-601]].
+
+### REQ-603 — Local access boundary
+
+Reference operations SHALL NOT initiate networking, membership changes, key exchange, or copying foreign theory contents into the referring theory.
+Existing local membership and decryption checks govern target inspection.
+Listing a relationship exposes its asserted target URI, not the target's alias, content, roster, or keys.
+The author intentionally discloses that URI to members of the referring theory.
+
+Trace: [[SPEC-007-theory-references#Boundary crossing]]; [[SPEC-007-theory-references#CON-603]]; [[SPEC-007-theory-references#TEST-609]]; [[SPEC-007-theory-references#TEST-610]]; [[SPEC-007-theory-references#OBS-601]].
+
+### REQ-604 — Honest resolution
+
+The resolver SHALL return the resolution states defined by [[SPEC-007-theory-references#CON-603]].
+An unavailable theory reveals no distinction between absent local data and inaccessible local data.
+A retracted statement remains inspectable as history.
+Multiple distinct entries matching a sentence selector produce `ambiguous`; no ordering rule resolves the collision.
+A broken or unavailable target does not invalidate the referring link.
+
+Trace: [[SPEC-007-theory-references#Unportable identity]]; [[SPEC-007-theory-references#CON-603]]; [[SPEC-007-theory-references#TEST-611]]; [[SPEC-007-theory-references#TEST-612]]; [[SPEC-007-theory-references#TEST-613]]; [[SPEC-007-theory-references#OBS-601]].
+
+### REQ-605 — No implicit reasoning
+
+Link projection SHALL NOT add facts, rules, trust weights, commitments, or dependency edges to either theory's logical closure.
+Relation names are navigational labels.
+Destination-authored reasoning over signed reports is governed separately by [[SPEC-008-theory-reports#REQ-705]].
+
+Trace: [[SPEC-007-theory-references#Accidental inference]]; [[SPEC-007-theory-references#TEST-614]]; [[SPEC-007-theory-references#OBS-601]].
+
+### REQ-606 — Scoped discovery
+
+The system SHALL report outgoing links and backlinks with their author, link receipt, referring theory, and declared scan scope.
+The default view includes active links only; `--history` includes retracted links with their state.
+Backlinks scan accessible local theories and always report `complete:false`.
+Canonical reference equality determines matches; a theory target matches whole-theory links only.
+A sentence target matches that exact sentence reference.
+
+Trace: [[SPEC-007-theory-references#False completeness]]; [[SPEC-007-theory-references#CON-603]]; [[SPEC-007-theory-references#TEST-615]]; [[SPEC-007-theory-references#TEST-616]]; [[SPEC-007-theory-references#TEST-617]]; [[SPEC-007-theory-references#OBS-601]].
+
+### NFR-601 — Context-independent output
+
+JSON output SHALL remain identical for identical explicit inputs and local state across terminal, pipe, and file output.
+Human output is selected by absence of `--json`, not terminal detection.
+
+Trace: [[SPEC-007-theory-references#False completeness]]; [[SPEC-007-theory-references#TEST-618]]; [[SPEC-007-theory-references#OBS-601]].
+
+## Contracts
+
+### CON-601 — TheoryRef grammar
+
+Interface: `parse_reference(bytes) -> TheoryRef`; `format_reference(TheoryRef) -> canonical ASCII URI`.
+Precondition: complete input is available; no trimming or decoding occurs before recognition.
+Postcondition: a typed theory ID and optional typed sentence ID; no alias and no location or credential.
+
+The [[URI Profile]] uses the following ABNF, a restricted profile of RFC 3986:
+
+```abnf
+reference   = scheme ":" theory-id [ "#" selector ]
+scheme      = "elephant"
+theory-id   = 64lowerhex
+selector    = %s"sentence=s-" 16lowerhex
+lowerhex    = DIGIT / %x61-66
+DIGIT       = %x30-39
+```
+
+ABNF's ordinary quoted `scheme` is ASCII case-insensitive; formatting emits lowercase.
+The selector is case-sensitive using RFC 7405 notation.
+IDs accept lowercase hex only.
+Authority, slash paths, query strings, percent escapes, spaces, controls, extra fragments, and unknown selectors are outside this profile.
+The theory ID uses Elephant's existing genesis-derived identity.
+The sentence selector uses the existing shortened receipt ID; collision handling belongs to [[SPEC-007-theory-references#REQ-604]].
+
+Recognition uses a grammar-generated recogniser shared by CLI and signed-record consumers.
+Semantic interpretation consumes its typed result.
+This is not a general URI parser, URL fetcher, or Spindle syntax extension.
+Round-trip and differential checks against RFC 3986 belong to [[SPEC-007-theory-references#TEST-619]] and [[SPEC-007-theory-references#TEST-620]].
+
+Error: `invalid-reference`, exit 3, with the failed component; no semantic action.
+Implements: [[SPEC-007-theory-references#REQ-601]].
+Verified by: [[SPEC-007-theory-references#TEST-601]], [[SPEC-007-theory-references#TEST-602]], [[SPEC-007-theory-references#TEST-603]].
+
+### CON-602 — Signed link and producer
+
+Commands (proposed, not implemented):
+
+```text
+elephant theory ref <theory-id-or-alias> [--sentence <sid>] [--json]
+elephant link <target-uri> --relation <relation> -t <referring-theory> [--from <sid>] [--json]
+elephant retract <link-sid> -t <referring-theory>
+```
+
+The first command checks only URI syntax after local alias resolution; it does not promise that a supplied sentence exists.
+The link command defaults its origin to the referring theory URI.
+With `--from`, the origin is an unambiguous admitted sentence in that theory, including historical retracted statements.
+The target can be unavailable; storing a reference requires no target access.
+For this cross-theory feature, origin and target theory IDs differ.
+
+Outer record: existing signed Assert Entry under [[SPEC-001-elephant-core#CON-002]].
+Payload: exactly this SPL metadata production; property order is fixed on emission and recognition.
+
+```text
+link = (meta elephant-link
+         (version 1)
+         (origin <SPL-string containing canonical reference>)
+         (relation <SPL-string containing relation>)
+         (target <SPL-string containing canonical reference>))
+relation = related-to | supports | depends-on | supersedes
+```
+
+The existing SPL recogniser parses strings and metadata; typed recognition checks the exact AST shape and embedded URI profile.
+Extra forms, extra properties, duplicate properties, and unknown versions invalidate the entire link entry.
+The consumer recognises each signed payload independently; merged metadata is not the link database.
+`elephant-link` is a typed metadata carrier, not a rule label or predicate declaration.
+Mixed payloads mentioning this reserved carrier are quarantined by upgraded readers.
+Unknown ordinary metadata outside this carrier retains existing behaviour.
+
+Postcondition: one signed entry appended to the referring theory; the target theory is unchanged.
+Existing retraction produces one ordinary retraction entry; it does not delete history.
+No implicit reciprocal link is written.
+Writer locking, daemon routing, and signing reuse the existing producer path.
+Mutation commands reject `--at` under the existing historical-write prohibition.
+
+Errors: malformed input → exit 3; absent origin → exit 8; ambiguous origin → exit 3; wrong retractor → exit 5.
+Identity, signature, transport, and storage errors retain [[SPEC-001-elephant-core#REQ-024]].
+JSON success extends [[SPEC-001-elephant-core#CON-004]] with `reference` or `link:{origin,relation,target,author,receipt}`.
+Implements: [[SPEC-007-theory-references#REQ-601]], [[SPEC-007-theory-references#REQ-602]], [[SPEC-007-theory-references#REQ-605]].
+Verified by: [[SPEC-007-theory-references#TEST-604]], [[SPEC-007-theory-references#TEST-605]], [[SPEC-007-theory-references#TEST-606]], [[SPEC-007-theory-references#TEST-607]], [[SPEC-007-theory-references#TEST-608]], [[SPEC-007-theory-references#TEST-614]].
+
+### CON-603 — Read surfaces
+
+```text
+elephant follow <reference> [--json]
+elephant links -t <theory> [--history] [--json]
+elephant backlinks <reference> [--history] [--json]
+```
+
+Input grammar: [[SPEC-007-theory-references#CON-601]] plus the existing theory-selector grammar and Boolean flags.
+Explicit inputs include local store, local identity/access state, evaluation time, and history mode.
+Historical evaluation uses existing `--at` semantics over locally known data; it does not reconstruct what a replica knew then.
+
+Follow returns `reference`, `state`, and `checked_at`.
+For accessible targets, it additionally returns the theory summary or selected signed entry through existing inspect/show representations.
+For `quarantined`, it returns the quarantine reason without presenting the entry as admitted evidence.
+
+| State | Meaning | Exit |
+|---|---|---|
+| `available` | Accessible theory or one admitted, non-retracted matching statement | 0 |
+| `retracted` | One admitted matching statement with an effective same-signer retraction | 0 |
+| `quarantined` | One matching candidate exists, but admission rejected it | 0 |
+| `unavailable` | No accessible local theory | 8 |
+| `missing` | Accessible theory has no matching entry | 8 |
+| `ambiguous` | Distinct signed entries share the selector | 3 |
+
+Identity matching considers all decoded entries before choosing their admission state.
+Byte-identical replicated entries count as one candidate.
+Retractions and other acts without their own receipt use the existing derived entry ID.
+The genesis sentinel follows the existing `show` entry-ID convention.
+
+Link lists return `v:1`, `scope:local-accessible`, `complete:false`, `history`, and `links`.
+Each row includes `origin`, `target`, `relation`, `author`, `receipt`, `referring_theory`, and `state:active|retracted`.
+Rows sort by referring theory ID then receipt ID then canonical entry digest, preserving collisions as separate rows.
+Lists never resolve targets implicitly.
+No target alias or target contents appear in the lists.
+
+Errors follow [[SPEC-001-elephant-core#CON-004]]; structured resolution outcomes retain the fields above even for nonzero exits.
+Implements: [[SPEC-007-theory-references#REQ-603]], [[SPEC-007-theory-references#REQ-604]], [[SPEC-007-theory-references#REQ-606]], [[SPEC-007-theory-references#NFR-601]].
+Verified by: [[SPEC-007-theory-references#TEST-609]], [[SPEC-007-theory-references#TEST-610]], [[SPEC-007-theory-references#TEST-611]], [[SPEC-007-theory-references#TEST-612]], [[SPEC-007-theory-references#TEST-613]], [[SPEC-007-theory-references#TEST-615]], [[SPEC-007-theory-references#TEST-616]], [[SPEC-007-theory-references#TEST-617]], [[SPEC-007-theory-references#TEST-618]].
+
+## Decisions
+
+### ADR-601 — An Elephant reference, not a network address
+
+Decision: use the existing full theory ID and optional existing sentence ID in an `elephant:` URI.
+The scheme identifies a resource without specifying a transport.
+An HTTPS-only identity requires a host that this peer-to-peer model does not otherwise need.
+A plain tuple remains the internal typed representation; the URI is its portable spelling.
+Generic URI validity does not establish scheme registration or installed application support.
+Fragment semantics belong to the Elephant theory representation described in [[URI Profile]], not to generic URI syntax.
+
+Composition-first: existing identity validation supplies the components; a small generated profile recogniser supplies their composition.
+Placement: Elephant, because Spindle neither owns theory membership nor locates encrypted stores.
+Simplicity Ladder: existing identity component, then minimum new syntax code; no shared networking abstraction.
+
+### ADR-602 — A signed link is metadata
+
+Decision: reuse an Assert Entry carrying typed metadata.
+This preserves existing signatures, encrypted storage, replication, and retraction.
+The read projection scans entry payloads rather than flattened metadata, preserving distinct authors and duplicate links.
+A logical `supports` predicate is rejected as the default representation because it conflates navigation with acceptance.
+
+### ADR-603 — Local resolver first
+
+Decision: resolve accessible local stores only.
+URI-based network discovery and background target inspection do not satisfy an additional accepted initial requirement.
+No new transport or global backlink service is introduced.
+// SIMPLIFY: local scans omit remote backlinks; revisit indexing after measured scan cost blocks use (trace: ADR-603).
+Graph rendering is deferred; stable edge JSON gives external tools the input needed without adding a renderer here.
+
+## Purity boundary and enable path
+
+Pure core: URI recognition/formatting, typed link recognition, link projection, canonical equality, deterministic state selection.
+Shell: alias lookup, access checks, local store reads, signed append, explicit rendering.
+Dependencies point shell → core; core has no store, clock, or networking access.
+Verification: module import review and [[SPEC-007-theory-references#TEST-609]].
+
+This feature is additive and explicitly invoked.
+Stopping link production requires no redeploy; existing links remain metadata on older clients.
+Rollback uses the prior binary without rewriting journals.
+Before release, operators receive the reserved-carrier compatibility note and the local-only backlink limitation.
+No observe-only admission mode is needed for ordinary traffic: unrelated payloads retain their existing semantics.
+New malformed typed carriers are rejected at production and quarantined during ingestion.
+Automatic URI handlers are not installed.
+
+## Tests
+
+The acceptance matrix below is a design, not executed implementation evidence.
+Each row has one intent and attributes its requirement through `Validates`.
+Core cases need temporary stores and existing identity fixtures; depth cases need property/fuzz tooling.
+The implementation plan starts with core cases and records observed failures before implementation.
+Targeted mutations remove grammar completion, no-fetch, and no-inference guards; their corresponding tests must fail before acceptance.
+
+### TEST-601 — Round-trip identity
+
+Validates: [[SPEC-007-theory-references#REQ-601]]. Type: positive. Tier: core.
+Parse theory-only and sentence URIs, including uppercase scheme spelling; formatting returns the canonical lowercase scheme and identical IDs.
+
+### TEST-602 — Reject outside-profile input
+
+Validates: [[SPEC-007-theory-references#REQ-601]]. Type: negative-input. Tier: core.
+Reject aliases, uppercase ID hex, short IDs, percent escapes, authority syntax, query strings, whitespace, Unicode, extra fragments, and trailing data.
+
+### TEST-603 — Do not persist an alias
+
+Validates: [[SPEC-007-theory-references#REQ-601]]. Type: negative-output. Tier: core.
+Create the reference through a local alias; assert that its serialized identity contains the full theory ID and no alias.
+
+### TEST-604 — Signed relationship and retraction
+
+Validates: [[SPEC-007-theory-references#REQ-602]]. Type: positive. Tier: core.
+Append a link and retract it as its signer; active view omits it and history retains author, endpoints, and retraction state.
+
+### TEST-605 — Reject malformed carrier
+
+Validates: [[SPEC-007-theory-references#REQ-602]]. Type: negative-input. Tier: core.
+Reject extra SPL forms, duplicate fields, wrong property order, unknown relation, self-link, and ambiguous origin before append.
+
+### TEST-606 — Preserve distinct authors
+
+Validates: [[SPEC-007-theory-references#REQ-602]]. Type: negative-output. Tier: core.
+Create identical relationships signed by different members; require separately attributable rows rather than one overwritten metadata value.
+
+### TEST-607 — Reject foreign retraction
+
+Validates: [[SPEC-007-theory-references#REQ-602]]. Type: prohibited-action. Tier: core.
+Attempt to retract another signer’s link; assert that its active state remains unchanged.
+
+### TEST-608 — Bound the write
+
+Validates: [[SPEC-007-theory-references#REQ-602]]. Type: scope-invariant. Tier: core.
+Assert exactly one referring-theory entry was appended; compare target journal, membership, keybook, and unrelated files byte-for-byte.
+
+### TEST-609 — No implicit access or fetch
+
+Validates: [[SPEC-007-theory-references#REQ-603]]. Type: prohibited-action. Tier: core.
+Follow an unavailable URI with instrumented network, join, and copy adapters; assert no adapter invocation and no target metadata disclosure.
+
+### TEST-610 — Read-only navigation
+
+Validates: [[SPEC-007-theory-references#REQ-603]]. Type: scope-invariant. Tier: core.
+Run follow and backlink queries; assert unchanged journals, roster, keybooks, aliases, and caller identity.
+
+### TEST-611 — Resolve all declared states
+
+Validates: [[SPEC-007-theory-references#REQ-604]]. Type: positive. Tier: core.
+Exercise available, retracted, quarantined, unavailable, missing, and ambiguous fixtures; require each declared state and exit code.
+
+### TEST-612 — Reject malformed follow argument
+
+Validates: [[SPEC-007-theory-references#REQ-604]]. Type: negative-input. Tier: core.
+Submit a valid URI prefix with a malformed suffix; require invalid-reference rather than any store lookup.
+
+### TEST-613 — Collision never selects a winner
+
+Validates: [[SPEC-007-theory-references#REQ-604]]. Type: negative-output. Tier: core.
+Provide distinct signed entries sharing one receipt plus identical replicated copies; require ambiguity only for the distinct entries.
+
+### TEST-614 — Links never affect reasoning
+
+Validates: [[SPEC-007-theory-references#REQ-605]]. Type: prohibited-action. Tier: core.
+Compare ordinary conclusions and commitments before and after each relation kind; require identical logical outputs.
+
+### TEST-615 — Discover locally visible edges
+
+Validates: [[SPEC-007-theory-references#REQ-606]]. Type: positive. Tier: core.
+Scan accessible local theories and exact target references; require sorted outgoing/backlink rows and correct history filtering.
+
+### TEST-616 — Reject malformed backlink target
+
+Validates: [[SPEC-007-theory-references#REQ-606]]. Type: negative-input. Tier: core.
+Supply malformed target URI; require rejection before any theory scan.
+
+### TEST-617 — Do not claim completeness
+
+Validates: [[SPEC-007-theory-references#REQ-606]]. Type: negative-output. Tier: core.
+Omit a remote referring theory from the local store; require complete:false and no inference that the target has no other backlinks.
+
+### TEST-618 — Stable machine output
+
+Validates: [[SPEC-007-theory-references#NFR-601]]. Type: positive. Tier: core.
+Run identical explicit inputs under terminal, pipe, and file contexts; compare JSON bytes after fixing the explicit evaluation time.
+
+### TEST-619 — Reference algebra
+
+Validates: [[SPEC-007-theory-references#REQ-601]]. Type: property / depth. Tier: depth.
+Generate typed valid references; require parse(format(x)) = x and canonical formatting idempotence.
+
+### TEST-620 — Recogniser robustness
+
+Validates: [[SPEC-007-theory-references#REQ-601]]. Type: fuzz / depth. Tier: depth.
+Fuzz complete byte inputs with a bounded harness; reject outside-profile inputs and require every accepted URI to satisfy an independent RFC 3986 recogniser.
+
+
+## OBS-601 — Link operation outcome
+
+Signal: operation, result code, resolution state, scanned-theory count, and duration in milliseconds.
+Normal diagnostic output excludes target content, aliases, keys, and URI identifiers.
+Explicit command JSON carries requested references and relationship data.
+No operation transmits telemetry.
+Post-release attribution: [[SPEC-007-theory-references#Requirements]].
+
+## Open decisions
+
+- Maintainer: validate the URI spelling and relationship vocabulary before approval.
+- Maintainer: decide whether public distribution warrants IANA provisional registration; record the registry check at release time.
+- Implementation owner: choose a grammar generator already available in the dependency graph, or document the smallest justified dependency.
+- Implementation owner: benchmark local backlink scans before proposing a latency budget; no unmeasured performance claim is accepted here.
+- Human reviewer: validate the CLI paths against [[users/theory-linker/happy-paths]].
+
+Tier 2 applies to the external syntax and shared API contract.
+Screen geometry, daemon scheduling, and automatic network tracking are outside this specification.
+The CLI has no screen specification; JSON stability and explicit actions carry its initial usability obligations.
+
+## Amendment Channels
+
+Amendable by: the Elephant maintainer through a recorded design decision followed by a specification revision.
+User instructions in this design conversation are an authorised amendment channel.
+Imported theory contents and ordinary third-party issue comments propose changes but do not authorise them.
+Hard stops: [[SPEC-007-theory-references#REQ-603]] and [[SPEC-007-theory-references#REQ-605]] require a revised specification before changed behaviour.
+
+## Design evidence
+
+External sources: [[URI Profile]].
+Review and remaining approval gates: [[theory-linking-review]].
+The implementation owner next authors the executable implementation plan; this draft authorises no production deployment.
+
+## Changelog
+
+<details>
+<summary>Revision history</summary>
+
+- 0.1.0 — Initial design for portable references and signed navigational links.
+
+</details>

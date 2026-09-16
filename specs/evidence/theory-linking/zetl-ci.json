@@ -1,0 +1,1128 @@
+{
+  "dead_links": [
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 19,
+      "target": "Elephant 2000",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 69,
+      "target": "users/operator/user",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 69,
+      "target": "users/agent/user",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 79,
+      "target": "DID",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 80,
+      "target": "Logical Theory",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 81,
+      "target": "Speech Act",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 85,
+      "target": "Elephant 2000",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 87,
+      "target": "cbcl-elephant",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 89,
+      "target": "SPL",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 92,
+      "target": "Commitment",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 95,
+      "target": "Defeasible Logic",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 116,
+      "target": "DID Document",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 138,
+      "target": "Loro",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 147,
+      "target": "LDH label",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 155,
+      "target": "RFC 1035",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 156,
+      "target": "RFC 1123",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 156,
+      "target": "RFC 6335",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 158,
+      "target": "PROTO-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 160,
+      "target": "RFC 8265",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 182,
+      "target": "cbcl-elephant",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 211,
+      "target": "users/operator/happy-paths",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 304,
+      "target": "Elephant 2000",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 345,
+      "target": "users/operator/happy-paths",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 353,
+      "target": "users/agent/happy-paths",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 375,
+      "target": "cbcl-elephant",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 424,
+      "target": "Stratified Negation",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 526,
+      "target": "Elephant 2000",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 539,
+      "target": "Loro",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 549,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 662,
+      "target": "Negation-as-Failure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 673,
+      "target": "Stratified Negation",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 683,
+      "target": "BUG-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 997,
+      "target": "Elephant 2000",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-001-elephant-core",
+      "line": 998,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 16,
+      "target": "Daemon",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 21,
+      "target": "pkarr",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 21,
+      "target": "Mainline DHT",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 23,
+      "target": "SPAKE2",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 51,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 56,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 77,
+      "target": "users/operator/happy-paths",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 96,
+      "target": "pkarr",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 108,
+      "target": "SPAKE2",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 115,
+      "target": "users/operator/happy-paths",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 151,
+      "target": "pkarr",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 174,
+      "target": "Loro",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 225,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 236,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 250,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 299,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 417,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-002-elephant-p2p",
+      "line": 461,
+      "target": "SPEC-047",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-003-elephant-tasks",
+      "line": 29,
+      "target": "hence",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-003-elephant-tasks",
+      "line": 32,
+      "target": "Logical Theory",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-003-elephant-tasks",
+      "line": 34,
+      "target": "Speech Act",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-003-elephant-tasks",
+      "line": 317,
+      "target": "PROTO-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-004-elephant-e2ee",
+      "line": 17,
+      "target": "MLS",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-004-elephant-e2ee",
+      "line": 79,
+      "target": "DID",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-004-elephant-e2ee",
+      "line": 179,
+      "target": "Elephant 2000",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 51,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 53,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 74,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 81,
+      "target": "users/agent/user",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 82,
+      "target": "users/operator/user",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 115,
+      "target": "users/agent/happy-paths",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 122,
+      "target": "Predicate Family",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 125,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 127,
+      "target": "SPL",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 154,
+      "target": "Parameterised Literal",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 171,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 173,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 175,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 206,
+      "target": "Predicate Family",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 212,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 213,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 248,
+      "target": "Parameterised Literal",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 294,
+      "target": "Grounding",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 312,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 333,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 334,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 372,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 381,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 382,
+      "target": "PROTO-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 577,
+      "target": "users/agent/happy-paths",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 702,
+      "target": "Predicate Family",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 703,
+      "target": "Parameterised Literal",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 704,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 705,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 742,
+      "target": "PROTO-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 786,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 834,
+      "target": "users/agent/user",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 857,
+      "target": "PROTO-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 870,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 876,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 878,
+      "target": "PROTO-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 910,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 952,
+      "target": "SPL",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 973,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 975,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1126,
+      "target": "SPEC-024 predicate model",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1150,
+      "target": "PROTO-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1206,
+      "target": "Parameterised Literal",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1238,
+      "target": "PROTO-001",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1248,
+      "target": "IMPL-005",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1266,
+      "target": "BUG-002",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1275,
+      "target": "IMPL-005",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1322,
+      "target": "Predicate Family",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1323,
+      "target": "Predicate Symbol",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1362,
+      "target": "Parameterised Literal",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-005-elephant-vocabulary",
+      "line": 1452,
+      "target": "users/agent/happy-paths",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 20,
+      "target": "spindle-core trust module",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 22,
+      "target": "Trust Policy",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 26,
+      "target": "Elephant 2000",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 57,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 68,
+      "target": "spindle-core trust module",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 70,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 71,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 72,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 74,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 75,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 77,
+      "target": "Trust Policy",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 77,
+      "target": "Weakest Link",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 78,
+      "target": "Trust Decay",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 78,
+      "target": "Diminishment",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 78,
+      "target": "Trust Gate",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 82,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 83,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 113,
+      "target": "spindle-core trust module",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 115,
+      "target": "Diminishment",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 115,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 116,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 122,
+      "target": "Source Atom",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 129,
+      "target": "Weakest Link",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 132,
+      "target": "Trust Decay",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 135,
+      "target": "Diminishment",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 137,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 150,
+      "target": "Trust Policy",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 175,
+      "target": "Source Atom",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 182,
+      "target": "Source Atom",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 223,
+      "target": "Trust Policy",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 224,
+      "target": "Source Atom",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 226,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 245,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 251,
+      "target": "Trust Policy",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 272,
+      "target": "Speech Act",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 290,
+      "target": "Source Atom",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 296,
+      "target": "Diminishment",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 297,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 298,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 300,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 308,
+      "target": "Weakest Link",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 310,
+      "target": "Diminishment",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 310,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 314,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 363,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 426,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 432,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 438,
+      "target": "Diminishment",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 454,
+      "target": "Trust Policy",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 466,
+      "target": "spindle-core trust module",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 467,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 471,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 480,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 484,
+      "target": "elephant-release-lockfile-pins",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 491,
+      "target": "Trust Policy",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 492,
+      "target": "Source Atom",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 537,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 566,
+      "target": "Diminishment",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 568,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 573,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 637,
+      "target": "Trust Policy",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 647,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 672,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 673,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 676,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 676,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 679,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 683,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 730,
+      "target": "Source Atom",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 766,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 767,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 800,
+      "target": "SPEC-023",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 844,
+      "target": "SPEC-025-trust-module-exposure",
+      "predicate": null
+    },
+    {
+      "source": "SPEC-006-elephant-trust",
+      "line": 845,
+      "target": "SPEC-023",
+      "predicate": null
+    }
+  ],
+  "orphans": [],
+  "syntax_errors": [],
+  "spl_diagnostics": [],
+  "drift_diagnostics": [],
+  "predicate_lints": [],
+  "summary": {
+    "dead_links": 184,
+    "orphans": 0,
+    "syntax_errors": 0,
+    "spl_errors": 0,
+    "drift_warnings": 0,
+    "drift_info": 0,
+    "total_spl_blocks": 0,
+    "drifted_blocks_warning": 0,
+    "drifted_blocks_info": 0,
+    "explicitly_grounded_facts": 0,
+    "broken_groundings": 0,
+    "predicate_errors": 0,
+    "predicate_warnings": 0
+  }
+}

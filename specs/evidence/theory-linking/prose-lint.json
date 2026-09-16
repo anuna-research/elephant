@@ -1,0 +1,90 @@
+[
+  {
+    "file": "specs/SPEC-007-theory-references.md",
+    "status": "fulfilled",
+    "value": {
+      "chunk_id": "086a39",
+      "wall_time_seconds": 0.000021833,
+      "exit_code": 0,
+      "original_token_count": 74,
+      "output": "{\n  \"lowercase_bcp14\": 0,\n  \"perfect_tense\": 0,\n  \"progressive_passive\": 0,\n  \"deprecated_term\": 0,\n  \"sentence_over_limit\": 0,\n  \"trailing_condition\": 0,\n  \"errors\": 0,\n  \"warnings\": 0,\n  \"total\": 0,\n  \"sentences\": 213,\n  \"words\": 2504,\n  \"longest\": 23,\n  \"limit\": 25,\n  \"mode\": \"descriptive\"\n}\n"
+    }
+  },
+  {
+    "file": "specs/SPEC-008-theory-reports.md",
+    "status": "fulfilled",
+    "value": {
+      "chunk_id": "1e80d2",
+      "wall_time_seconds": 0.004810042,
+      "exit_code": 0,
+      "original_token_count": 74,
+      "output": "{\n  \"lowercase_bcp14\": 0,\n  \"perfect_tense\": 0,\n  \"progressive_passive\": 0,\n  \"deprecated_term\": 0,\n  \"sentence_over_limit\": 0,\n  \"trailing_condition\": 0,\n  \"errors\": 0,\n  \"warnings\": 0,\n  \"total\": 0,\n  \"sentences\": 424,\n  \"words\": 5372,\n  \"longest\": 25,\n  \"limit\": 25,\n  \"mode\": \"descriptive\"\n}\n"
+    }
+  },
+  {
+    "file": "specs/reviews/theory-linking-review.md",
+    "status": "fulfilled",
+    "value": {
+      "chunk_id": "f3bc3a",
+      "wall_time_seconds": 0.000151333,
+      "exit_code": 0,
+      "original_token_count": 74,
+      "output": "{\n  \"lowercase_bcp14\": 0,\n  \"perfect_tense\": 0,\n  \"progressive_passive\": 0,\n  \"deprecated_term\": 0,\n  \"sentence_over_limit\": 0,\n  \"trailing_condition\": 0,\n  \"errors\": 0,\n  \"warnings\": 0,\n  \"total\": 0,\n  \"sentences\": 69,\n  \"words\": 865,\n  \"longest\": 20,\n  \"limit\": 25,\n  \"mode\": \"descriptive\"\n}\n"
+    }
+  },
+  {
+    "file": "specs/concepts/Theory Reference.md",
+    "status": "fulfilled",
+    "value": {
+      "chunk_id": "25e62b",
+      "wall_time_seconds": 0.00000475,
+      "exit_code": 0,
+      "original_token_count": 73,
+      "output": "{\n  \"lowercase_bcp14\": 0,\n  \"perfect_tense\": 0,\n  \"progressive_passive\": 0,\n  \"deprecated_term\": 0,\n  \"sentence_over_limit\": 0,\n  \"trailing_condition\": 0,\n  \"errors\": 0,\n  \"warnings\": 0,\n  \"total\": 0,\n  \"sentences\": 7,\n  \"words\": 72,\n  \"longest\": 14,\n  \"limit\": 25,\n  \"mode\": \"descriptive\"\n}\n"
+    }
+  },
+  {
+    "file": "specs/concepts/Result Report.md",
+    "status": "fulfilled",
+    "value": {
+      "chunk_id": "bde11c",
+      "wall_time_seconds": 0.000001583,
+      "exit_code": 0,
+      "original_token_count": 73,
+      "output": "{\n  \"lowercase_bcp14\": 0,\n  \"perfect_tense\": 0,\n  \"progressive_passive\": 0,\n  \"deprecated_term\": 0,\n  \"sentence_over_limit\": 0,\n  \"trailing_condition\": 0,\n  \"errors\": 0,\n  \"warnings\": 0,\n  \"total\": 0,\n  \"sentences\": 7,\n  \"words\": 86,\n  \"longest\": 17,\n  \"limit\": 25,\n  \"mode\": \"descriptive\"\n}\n"
+    }
+  },
+  {
+    "file": "specs/concepts/URI Profile.md",
+    "status": "fulfilled",
+    "value": {
+      "chunk_id": "a0aeb4",
+      "wall_time_seconds": 0.000001291,
+      "exit_code": 0,
+      "original_token_count": 73,
+      "output": "{\n  \"lowercase_bcp14\": 0,\n  \"perfect_tense\": 0,\n  \"progressive_passive\": 0,\n  \"deprecated_term\": 0,\n  \"sentence_over_limit\": 0,\n  \"trailing_condition\": 0,\n  \"errors\": 0,\n  \"warnings\": 0,\n  \"total\": 0,\n  \"sentences\": 9,\n  \"words\": 91,\n  \"longest\": 13,\n  \"limit\": 25,\n  \"mode\": \"descriptive\"\n}\n"
+    }
+  },
+  {
+    "file": "specs/users/theory-linker/user.md",
+    "status": "fulfilled",
+    "value": {
+      "chunk_id": "3a24f3",
+      "wall_time_seconds": 0.004824,
+      "exit_code": 0,
+      "original_token_count": 74,
+      "output": "{\n  \"lowercase_bcp14\": 0,\n  \"perfect_tense\": 0,\n  \"progressive_passive\": 0,\n  \"deprecated_term\": 0,\n  \"sentence_over_limit\": 0,\n  \"trailing_condition\": 0,\n  \"errors\": 0,\n  \"warnings\": 0,\n  \"total\": 0,\n  \"sentences\": 14,\n  \"words\": 146,\n  \"longest\": 24,\n  \"limit\": 25,\n  \"mode\": \"descriptive\"\n}\n"
+    }
+  },
+  {
+    "file": "specs/users/theory-linker/happy-paths.md",
+    "status": "fulfilled",
+    "value": {
+      "chunk_id": "910c14",
+      "wall_time_seconds": 0.000001625,
+      "exit_code": 0,
+      "original_token_count": 74,
+      "output": "{\n  \"lowercase_bcp14\": 0,\n  \"perfect_tense\": 0,\n  \"progressive_passive\": 0,\n  \"deprecated_term\": 0,\n  \"sentence_over_limit\": 0,\n  \"trailing_condition\": 0,\n  \"errors\": 0,\n  \"warnings\": 0,\n  \"total\": 0,\n  \"sentences\": 31,\n  \"words\": 391,\n  \"longest\": 19,\n  \"limit\": 25,\n  \"mode\": \"descriptive\"\n}\n"
+    }
+  }
+]

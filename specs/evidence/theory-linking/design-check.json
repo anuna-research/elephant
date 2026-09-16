@@ -1,0 +1,25 @@
+{
+  "scope": "specification links and finite design model only; not implementation verification",
+  "result": "pass",
+  "errors": [],
+  "temporal_exemplification": [
+    [
+      999,
+      false
+    ],
+    [
+      1000,
+      true
+    ],
+    [
+      1999,
+      true
+    ],
+    [
+      2000,
+      false
+    ]
+  ],
+  "inclusive_expiry_mutant_rejected": true,
+  "product_tests_executed": false
+}

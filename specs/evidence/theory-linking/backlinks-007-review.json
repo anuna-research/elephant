@@ -1,0 +1,555 @@
+{
+  "page": "SPEC-007-theory-references",
+  "depth": 1,
+  "backlinks": [
+    {
+      "source": "happy-paths",
+      "target": "SPEC-007-theory-references",
+      "line": 23,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "URI Profile",
+      "target": "SPEC-007-theory-references",
+      "line": 21,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "URI Profile",
+      "target": "SPEC-007-theory-references",
+      "line": 8,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "Theory Reference",
+      "target": "SPEC-007-theory-references",
+      "line": 15,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-008-theory-reports",
+      "target": "SPEC-007-theory-references",
+      "line": 417,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-008-theory-reports",
+      "target": "SPEC-007-theory-references",
+      "line": 62,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 458,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 439,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 429,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 424,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 419,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 414,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 409,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 404,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 399,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 394,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 389,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 384,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 379,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 374,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 369,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 364,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 359,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 354,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 349,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 344,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 339,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 334,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 314,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 277,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 276,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 247,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 237,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 236,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 190,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 189,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 186,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 181,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 155,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 148,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 138,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 130,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 124,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 120,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 111,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 105,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 100,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 95,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 54,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 53,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 52,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 46,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 45,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 44,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 43,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 42,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 41,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 38,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 36,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 35,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    },
+    {
+      "source": "SPEC-007-theory-references",
+      "target": "SPEC-007-theory-references",
+      "line": 34,
+      "alias": null,
+      "is_embed": false,
+      "context": null,
+      "hop": 1
+    }
+  ]
+}
