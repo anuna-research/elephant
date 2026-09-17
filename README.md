@@ -62,6 +62,9 @@ path deps — see **Quick start** below. Maintainers cut releases with
 `./release.sh <version>`, which gates, tags, and triggers the cross-compile +
 publish pipeline (`.forgejo/workflows/release.yaml`).
 
+For aggregation, shared lookup functions, typed JSON, and full trust details,
+see [Spindle integration](docs/spindle-integration.md).
+
 ## Quick start
 
 ```bash

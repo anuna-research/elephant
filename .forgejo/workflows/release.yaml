@@ -29,7 +29,7 @@
 # elephant depends on THREE sibling repos via path deps (Cargo.toml), all
 # public on git.anuna.io and cloned anonymously over HTTPS:
 #   ../cbcl-rs      (crates cbcl-core, cbcl-parser)
-#   ../spindle-rust (crates spindle-core, spindle-parser)
+#   ../spindle-rust (crates spindle-core, spindle-parser, spindle-contract)
 #   ../did-crdt     (identity)
 # Each is checked out at a PINNED commit: Cargo's `--locked` pins the dependency
 # graph but cannot pin path-dependency *contents*, so building against a moving
@@ -69,8 +69,8 @@ on:
 # in lockstep with the Cargo.lock you tested locally, and keep them equal to
 # .forgejo/workflows/ci.yaml so the gate tests what the release ships.
 env:
-  CBCL_RS_REF: 1c6fa8f581a69a7bcb88fb787fa37c81f5de4221
-  SPINDLE_RUST_REF: b85972029f293f7391a0e55eb20d5f8437e8ce59
+  CBCL_RS_REF: febc6691e6dd2d5f7116b1a4d84c984b64717564
+  SPINDLE_RUST_REF: ede0ec27bb35abff1b8f9b4cb2af6747bd796049
   DID_CRDT_REF: adb5c7ac1423173f00201cddffa60fe672fb2a53
 
 jobs:

@@ -544,6 +544,7 @@ version = "0.1.0"
 dependencies = [
  "hashbrown 0.15.5",
  "serde",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -1428,6 +1429,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "spake2",
+ "spindle-contract",
  "spindle-core",
  "spindle-parser",
  "tempfile",
@@ -5388,8 +5390,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
+name = "spindle-contract"
+version = "0.4.0"
+dependencies = [
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "spindle-core",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "spindle-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "derive_more 1.0.0",
@@ -5405,7 +5418,7 @@ dependencies = [
 
 [[package]]
 name = "spindle-parser"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "nom",
@@ -5555,7 +5568,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

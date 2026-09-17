@@ -116,7 +116,10 @@ fn daemon_status_exposes_sync_health_fields() {
         st.get("sync_interval_s").is_some(),
         "status must carry sync_interval_s (null when sync is off): {st}"
     );
-    assert!(st["sync_interval_s"].is_null(), "sync is off in this run: {st}");
+    assert!(
+        st["sync_interval_s"].is_null(),
+        "sync is off in this run: {st}"
+    );
     e.ok(&["daemon", "stop"]);
 }
 

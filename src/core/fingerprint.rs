@@ -143,8 +143,13 @@ pub fn status_rows(closure: &crate::core::closure::Closure) -> Vec<(String, Stri
     }
     let mut best: std::collections::BTreeMap<String, ConclusionType> =
         std::collections::BTreeMap::new();
+    let mut displays = std::collections::HashMap::new();
     for c in crate::core::closure::presentable(&closure.conclusions) {
-        let key = crate::core::closure::literal_display(&c.literal);
+        let key = crate::core::reasoning::literal_key(&c.literal);
+        displays.insert(
+            key.clone(),
+            crate::core::closure::literal_display(&c.literal),
+        );
         best.entry(key)
             .and_modify(|t| {
                 if rank(c.conclusion_type) < rank(*t) {
@@ -154,7 +159,12 @@ pub fn status_rows(closure: &crate::core::closure::Closure) -> Vec<(String, Stri
             .or_insert(c.conclusion_type);
     }
     best.into_iter()
-        .map(|(lit, tag)| (tag.symbol().to_string(), lit))
+        .map(|(key, tag)| {
+            (
+                tag.symbol().to_string(),
+                displays.remove(&key).expect("display for literal"),
+            )
+        })
         .collect()
 }
 

@@ -126,9 +126,15 @@ pub fn serve(paths: Paths, ident: Identity, lock: super::DaemonLock) -> AppResul
             // shutdown. We abort this task after the server stops.
             let shutdown = Arc::new(tokio::sync::Notify::new());
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::p2p::sync::run(paths, ident, shutdown, interval, Some(refresh_tx), health)
-                        .await
+                if let Err(e) = crate::p2p::sync::run(
+                    paths,
+                    ident,
+                    shutdown,
+                    interval,
+                    Some(refresh_tx),
+                    health,
+                )
+                .await
                 {
                     tracing::warn!("continuous sync stopped: {e}");
                 }
@@ -286,14 +292,17 @@ fn sync_health_json(state: &AppState) -> Vec<serde_json::Value> {
     let health = state.sync_health.lock().unwrap();
     let mut by_theory: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     for ((theory, peer), h) in health.iter() {
-        by_theory.entry(theory.clone()).or_default().push(serde_json::json!({
-            "peer": peer,
-            "last_sync_ok": h.last_sync_ok,
-            "last_applied": h.last_applied,
-            "last_error": h.last_error,
-            "last_error_at": h.last_error_at,
-            "stale": peer_stale(h, now_ms, state.sync_interval_s),
-        }));
+        by_theory
+            .entry(theory.clone())
+            .or_default()
+            .push(serde_json::json!({
+                "peer": peer,
+                "last_sync_ok": h.last_sync_ok,
+                "last_applied": h.last_applied,
+                "last_error": h.last_error,
+                "last_error_at": h.last_error_at,
+                "stale": peer_stale(h, now_ms, state.sync_interval_s),
+            }));
     }
     by_theory
         .into_iter()

@@ -63,6 +63,13 @@ pub struct CommitmentState {
 pub struct Closure {
     /// Underlying spindle theory (for explain/why-not/what-if follow-ups).
     pub theory: Theory,
+    /// Source retained for re-grounding hypothetical worlds with new bindings.
+    pub reasoning_theory: Theory,
+    pub prepared: spindle_core::pipeline::PipelineResult,
+    pub options: PrepareOptions,
+    /// Portable shared registry document selected from active signed entries.
+    pub extensions: Option<String>,
+    pub has_aggregates: bool,
     pub conclusions: Vec<Conclusion>,
     pub weighted: Vec<WeightedConclusion>,
     pub commitments: Vec<CommitmentState>,
@@ -106,6 +113,29 @@ pub fn close(
     resolve: &dyn Fn(&str, &str) -> Option<ed25519_dalek::VerifyingKey>,
     local_trust_spl: &str,
     now_ms: i64,
+) -> AppResult<Closure> {
+    close_with_options(
+        entries,
+        theory_id,
+        genesis_sentinel,
+        resolve,
+        local_trust_spl,
+        now_ms,
+        PrepareOptions::default(),
+    )
+}
+
+/// Embedding entry point, including host-registered pure extension functions
+/// and grounding budgets. Shared extension documents augment this registry.
+/// Evaluation time always comes from `now_ms`, as for `close`.
+pub fn close_with_options(
+    entries: &[Entry],
+    theory_id: &str,
+    genesis_sentinel: &str,
+    resolve: &dyn Fn(&str, &str) -> Option<ed25519_dalek::VerifyingKey>,
+    local_trust_spl: &str,
+    now_ms: i64,
+    mut options: PrepareOptions,
 ) -> AppResult<Closure> {
     // 1–2: validate every entry; quarantine failures.
     let mut admitted: Vec<Admitted> = Vec::new();
@@ -283,18 +313,49 @@ pub fn close(
             keep
         });
     }
-    let opts = PrepareOptions {
-        reference_time: Some(TimePoint::from_millis(now_ms)),
-        ..Default::default()
-    };
-    let conclusions = spindle_core::reason::reason_with_options(&theory, opts)
+    // Resolve documents from admitted entries, not the assembled metadata map:
+    // this makes replacement/retraction and the corpus ordering explicit.
+    let mut extensions = None;
+    for a in &admitted {
+        if a.retracted || a.label_shadowed {
+            continue;
+        }
+        if let SpeechAct::Assert { spl, .. } = &a.act {
+            let parsed =
+                spindle_parser::parse_spl(spl).map_err(|e| AppError::Reasoner(e.to_string()))?;
+            if let Some(document) = crate::core::extensions::document(&parsed)? {
+                extensions = Some(document.to_owned());
+            }
+        }
+    }
+    if let Some(document) = &extensions {
+        let shared = crate::core::extensions::registry(document)?;
+        options
+            .function_registry
+            .get_or_insert_with(Default::default)
+            .merge(shared);
+    }
+    options.reference_time = Some(TimePoint::from_millis(now_ms));
+    let has_aggregates = spindle_core::aggregation::source::has_folds(&theory);
+    let reasoning_theory = crate::core::reasoning::source(&theory, &mut options)?;
+    let mut prepared = crate::core::reasoning::prepare(&reasoning_theory, options.clone())?;
+    let conclusions = spindle_core::reason::reason_prepared(&prepared.theory)
         .map_err(|e| AppError::Reasoner(e.to_string()))?;
-    let weighted = spindle_core::pipeline::compute_weighted_conclusions(
-        &conclusions,
-        &theory,
-        theory.trust_policy(),
-        Some(TimePoint::from_millis(now_ms)),
-    );
+    let weighted = if has_aggregates {
+        Vec::new()
+    } else {
+        spindle_core::pipeline::compute_weighted_conclusions(
+            &conclusions,
+            &prepared.theory,
+            prepared.theory.trust_policy(),
+            Some(TimePoint::from_millis(now_ms)),
+        )
+    };
+    if has_aggregates {
+        // Restore audit annotations after lowering, without replacing the
+        // internal guard set that hides aggregate snapshot predicates.
+        prepared.theory.copy_metadata_from(&theory);
+    }
 
     // 7: commitment states (REQ-015).
     let provable = |lit_text: &str| -> bool {
@@ -352,6 +413,11 @@ pub fn close(
 
     Ok(Closure {
         theory,
+        reasoning_theory,
+        prepared,
+        options,
+        extensions,
+        has_aggregates,
         conclusions,
         weighted,
         commitments,
@@ -411,9 +477,9 @@ pub fn literal_display(l: &spindle_core::literal::Literal) -> String {
 /// Canonical `to_spl` rendering of a literal given as user text
 /// ("release-ready" → "(release-ready)"), via the single SPL recogniser.
 pub fn normalize_literal(text: &str) -> Option<String> {
-    let t = spindle_parser::parse_spl(&format!("(given {})", text.trim())).ok()?;
-    let rule = t.rules().next()?;
-    rule.head.first().map(|l| l.to_spl())
+    crate::core::reasoning::parse_literal(text)
+        .ok()
+        .map(|l| l.to_spl())
 }
 
 /// Conclusions filtered for presentation: skip reserved synthetic literals.

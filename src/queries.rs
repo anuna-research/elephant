@@ -3,6 +3,7 @@
 
 use crate::cli::Ctx;
 use crate::core::closure::{self, Closure, CommitmentPhase};
+use crate::core::reasoning;
 use crate::errors::{AppError, AppResult};
 use crate::store::{GENESIS_THEORY, TheoryStore};
 use spindle_core::conclusion::ConclusionType;
@@ -53,12 +54,7 @@ pub fn view(ctx: &Ctx) -> AppResult<View> {
 
 /// Parse a user-typed literal through the single SPL recogniser.
 pub fn parse_literal(text: &str) -> AppResult<Literal> {
-    let t = spindle_parser::parse_spl(&format!("(given {})", text.trim()))
-        .map_err(|e| AppError::Parse(format!("'{text}' is not a valid SPL literal: {e}")))?;
-    t.rules()
-        .next()
-        .and_then(|r| r.head.first().cloned())
-        .ok_or_else(|| AppError::Parse(format!("'{text}' did not parse to a literal")))
+    reasoning::parse_literal(text)
 }
 
 /// Render a literal for display and for pasting back into a query command.
@@ -72,6 +68,7 @@ fn lit_display(l: &Literal) -> String {
 
 pub fn status(ctx: &Ctx, trust: bool, fingerprint: bool) -> AppResult<()> {
     let v = view(ctx)?;
+    check_trust(&v.closure, trust)?;
     // One row per literal with its effective tag:
     // +D beats +d; any positive beats negatives; -D beats -d.
     fn rank(t: ConclusionType) -> u8 {
@@ -86,7 +83,7 @@ pub fn status(ctx: &Ctx, trust: bool, fingerprint: bool) -> AppResult<()> {
         std::collections::BTreeMap::new();
     let mut lits = std::collections::HashMap::new();
     for c in closure::presentable(&v.closure.conclusions) {
-        let key = lit_display(&c.literal);
+        let key = reasoning::literal_key(&c.literal);
         lits.entry(key.clone()).or_insert_with(|| c.literal.clone());
         best.entry(key.clone())
             .and_modify(|t| {
@@ -97,26 +94,34 @@ pub fn status(ctx: &Ctx, trust: bool, fingerprint: bool) -> AppResult<()> {
             .or_insert(c.conclusion_type);
     }
     let mut rows: Vec<serde_json::Value> = Vec::new();
-    for (literal, tag) in &best {
+    for (key, tag) in &best {
+        let lit = &lits[key];
+        let literal = lit_display(lit);
         // #26: every row carries the canonical plain-language state next to the
         // compact tag, so API clients never invent their own gloss.
         let st = closure::proof_state(*tag);
         let mut row = serde_json::json!({
             "literal": literal,
+            "literal_struct": reasoning::typed(lit),
+            "predicate_key": lit.predicate_key().to_string(),
             "tag": tag.symbol(),
             "proof_state": st.name,
             "positive": st.positive,
             "level": st.level,
         });
         if trust {
-            if let Some(w) = v
-                .closure
-                .weighted
-                .iter()
-                .find(|w| Some(&w.literal) == lits.get(literal) && w.conclusion_type == *tag)
+            if let Some(w) =
+                v.closure.weighted.iter().find(|w| {
+                    reasoning::literal_key(&w.literal) == *key && w.conclusion_type == *tag
+                })
             {
                 row["degree"] = serde_json::json!(w.degree);
                 row["above_threshold"] = serde_json::json!(w.above_threshold);
+                let mut sources: Vec<_> = w.sources.iter().map(|s| &s.id).collect();
+                sources.sort();
+                row["sources"] = serde_json::json!(sources);
+                row["trust_details"] =
+                    serde_json::json!(spindle_contract::reason::TrustDetails::from(w));
             }
         }
         rows.push(row);
@@ -270,7 +275,7 @@ pub fn closure_compare(json: bool, a: &std::path::Path, b: &std::path::Path) -> 
 pub fn explain(ctx: &Ctx, literal: &str) -> AppResult<()> {
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
-    let expl = spindle_core::explanation::explain(&v.closure.theory, &lit)
+    let expl = spindle_core::explanation::explain(&v.closure.prepared.theory, &lit)
         .map_err(|e| AppError::Reasoner(e.to_string()))?;
     match expl {
         Some(e) => {
@@ -278,7 +283,7 @@ pub fn explain(ctx: &Ctx, literal: &str) -> AppResult<()> {
                 println!(
                     "{}",
                     serde_json::json!({"v":1, "theory": v.store.theory_id,
-                        "literal": literal, "explanation": e.to_json()})
+                        "literal": literal, "literal_struct": reasoning::typed(&lit), "explanation": e.to_json()})
                 );
             } else {
                 println!("{}", e.to_natural_language());
@@ -293,7 +298,7 @@ pub fn explain(ctx: &Ctx, literal: &str) -> AppResult<()> {
                 println!(
                     "{}",
                     serde_json::json!({"v":1, "theory": v.store.theory_id,
-                        "literal": literal, "explanation": null,
+                        "literal": literal, "literal_struct": reasoning::typed(&lit), "explanation": null,
                         "not_provable": true,
                         "hint": format!("see `elephant why-not {literal}`")})
                 );
@@ -411,8 +416,12 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
     use spindle_core::query::BlockingType;
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
-    let r = spindle_core::query::why_not(&v.closure.theory, &lit)
-        .map_err(|e| AppError::Reasoner(e.to_string()))?;
+    let r = spindle_core::query::why_not_with_conclusions(
+        &v.closure.prepared.theory,
+        &lit,
+        &v.closure.conclusions,
+    )
+    .map_err(|e| AppError::Reasoner(e.to_string()))?;
     let vv = crate::core::vocab::view(&v.closure);
     if ctx.json {
         let blocked: Vec<_> = r
@@ -423,6 +432,7 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
                     "type": b.blocking_type.to_string(),
                     "rule": b.rule_label,
                     "missing": b.missing_literals.iter().map(lit_display).collect::<Vec<_>>(),
+                    "missing_struct": b.missing_literals.iter().map(reasoning::typed).collect::<Vec<_>>(),
                     "blocking_rule": b.blocking_rule,
                     "explanation": b.explanation,
                 });
@@ -496,9 +506,22 @@ pub fn why_not(ctx: &Ctx, literal: &str) -> AppResult<()> {
 // ── require / abduction (REQ-013) ───────────────────────────────────────
 
 pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
-    use spindle_core::query::{
-        DEFAULT_MAX_RAW_CANDIDATES, RequiresOptions, RequiresSearchStatus, requires_with_options,
-    };
+    require_with_options(
+        ctx,
+        literal,
+        spindle_core::query::RequiresOptions {
+            max_solutions: 8,
+            ..Default::default()
+        },
+    )
+}
+
+pub fn require_with_options(
+    ctx: &Ctx,
+    literal: &str,
+    options: spindle_core::query::RequiresOptions,
+) -> AppResult<()> {
+    use spindle_core::query::RequiresSearchStatus;
     let v = view(ctx)?;
     let lit = parse_literal(literal)?;
     // Verified abduction (REQ-013, #16): `requires_with_options` injects each
@@ -511,16 +534,8 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
     // this many are accepted, even if more verified solutions remain, so hitting
     // the cap is treated as non-exhaustive below rather than claiming the search
     // was complete (#16 review).
-    const MAX_SOLUTIONS: usize = 8;
-    let r = requires_with_options(
-        &v.closure.theory,
-        &lit,
-        RequiresOptions {
-            max_solutions: MAX_SOLUTIONS,
-            max_raw_candidates: DEFAULT_MAX_RAW_CANDIDATES,
-        },
-    )
-    .map_err(|e| AppError::Reasoner(e.to_string()))?;
+    let r = reasoning::requires(&v.closure, &lit, options)
+        .map_err(|e| AppError::Reasoner(e.to_string()))?;
     let vv = crate::core::vocab::view(&v.closure);
     let already = r.already_provable;
     // Every returned solution is already verified and open (an already-provable
@@ -538,10 +553,13 @@ pub fn require(ctx: &Ctx, literal: &str) -> AppResult<()> {
     // count did not hit the solution cap (spindle reports BoundedComplete on
     // reaching `max_solutions`, which is not the same as "no more exist").
     let exhaustive = matches!(r.search_status, RequiresSearchStatus::BoundedComplete)
-        && solutions.len() < MAX_SOLUTIONS;
+        && solutions.len() < options.max_solutions;
     if ctx.json {
         let mut obj = serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": literal,
         "already_provable": already, "solutions": solutions,
+        "goal_struct": reasoning::typed(&lit),
+        "solutions_struct": open.iter().map(|s| s.facts.iter().map(reasoning::typed).collect::<Vec<_>>()).collect::<Vec<_>>(),
+        "verification_mode": "verified",
         "search_status": if exhaustive { "bounded-complete" } else { "budget-exhausted" },
         "verification": {
             "raw_examined": r.verification.raw_examined,
@@ -639,7 +657,7 @@ pub fn what_if(ctx: &Ctx, facts_then_goal: &[String]) -> AppResult<()> {
             )?))
         })
         .collect::<AppResult<_>>()?;
-    let r = spindle_core::query::what_if(&v.closure.theory, hyps, &goal)
+    let r = reasoning::what_if(&v.closure, hyps, &goal)
         .map_err(|e| AppError::Reasoner(e.to_string()))?;
     if ctx.json {
         println!(
@@ -647,10 +665,13 @@ pub fn what_if(ctx: &Ctx, facts_then_goal: &[String]) -> AppResult<()> {
             serde_json::json!({"v":1, "theory": v.store.theory_id, "goal": goal_text,
                 "provable": r.is_provable(),
                 "newly_provable": r.newly_provable().iter().map(lit_display).collect::<Vec<_>>(),
+                "goal_struct": reasoning::typed(&goal),
+                "newly_provable_struct": r.newly_provable().iter().map(reasoning::typed).collect::<Vec<_>>(),
                 "proof_state_map": closure::PROOF_STATE_MAP_VERSION,
                 "changed": r.changed_conclusions.iter()
                     .map(|(l, from, to)| serde_json::json!({
                         "literal": lit_display(l),
+                        "literal_struct": reasoning::typed(l),
                         "from": from.symbol(), "to": to.symbol(),
                         // #26: shared canonical reading of the before/after tags.
                         "from_state": closure::proof_state(*from).name,
@@ -1416,6 +1437,7 @@ pub fn trace(ctx: &Ctx) -> AppResult<()> {
                 let st = closure::proof_state(c.conclusion_type);
                 serde_json::json!({
                     "literal": lit_display(&c.literal),
+                    "literal_struct": reasoning::typed(&c.literal),
                     "tag": c.conclusion_type.symbol(),
                     "proof_state": st.name,
                     "positive": st.positive,
@@ -1449,4 +1471,135 @@ pub fn conclusions_positive(v: &View) -> Vec<(String, ConclusionType)> {
         .filter(|c| c.conclusion_type.is_positive() && !c.literal.negation)
         .map(|c| (lit_display(&c.literal), c.conclusion_type))
         .collect()
+}
+
+fn check_trust(closure: &Closure, requested: bool) -> AppResult<()> {
+    if requested && closure.has_aggregates {
+        return Err(AppError::Usage("Spindle does not support trust-weighted aggregation; no trust degrees are available for this theory".into()));
+    }
+    Ok(())
+}
+
+/// Full engine contract, separate from status's effective-tag projection.
+pub fn reason(ctx: &Ctx, trust: bool, v2: bool) -> AppResult<()> {
+    if !ctx.json {
+        return status(ctx, trust, false);
+    }
+    let v = view(ctx)?;
+    check_trust(&v.closure, trust)?;
+    let conclusions: Vec<_> = closure::presentable(&v.closure.conclusions)
+        .cloned()
+        .collect();
+    let weighted: Vec<_> = v
+        .closure
+        .conclusions
+        .iter()
+        .zip(&v.closure.weighted)
+        .filter(|(c, _)| {
+            closure::presentable(std::slice::from_ref(c))
+                .next()
+                .is_some()
+        })
+        .map(|(_, w)| w.clone())
+        .collect();
+    let mut output = spindle_contract::reason::reason_output(
+        &v.closure.prepared,
+        &conclusions,
+        trust.then_some(weighted.as_slice()),
+        false,
+        v2,
+    );
+    // Display SPL can coincide for differently typed terms. Use the typed
+    // structure as a final tie-breaker so the contract is stable across runs.
+    if let Some(rows) = output["conclusions"].as_array_mut() {
+        rows.sort_by_cached_key(|row| {
+            (
+                row["literal_spl"].to_string(),
+                row["conclusion_type"].to_string(),
+                row["literal_struct"].to_string(),
+            )
+        });
+    }
+    println!("{output}");
+    Ok(())
+}
+
+pub fn abduce(ctx: &Ctx, literal: &str, max: usize) -> AppResult<()> {
+    let v = view(ctx)?;
+    let goal = parse_literal(literal)?;
+    let result = reasoning::abduce(&v.closure, &goal, max)?;
+    if ctx.json {
+        let mut output = spindle_contract::query::abduction_output(literal, &result);
+        output["v"] = 1.into();
+        output["theory"] = serde_json::json!(v.store.theory_id);
+        output["goal_struct"] = serde_json::json!(reasoning::typed(&goal));
+        output["verification_mode"] = "raw".into();
+        output["limit_reached"] = (result.solutions.len() >= max).into();
+        println!("{output}");
+    } else {
+        println!("raw candidates (unverified; use require to verify):");
+        for candidate in &result.solutions {
+            if candidate.facts.is_empty() {
+                println!("  already provable");
+            } else {
+                println!(
+                    "  {}",
+                    candidate
+                        .facts
+                        .iter()
+                        .map(lit_display)
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn extensions(ctx: &Ctx) -> AppResult<()> {
+    let v = view(ctx)?;
+    let document = v.closure.extensions.as_deref().unwrap_or(
+        "{\"schema_version\":\"spindle.extensions.v1\",\"functions\":[],\"aggregators\":[]}",
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(document).map_err(|e| AppError::Parse(e.to_string()))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&value).expect("JSON document")
+    );
+    Ok(())
+}
+
+pub fn spindle_vocab(ctx: &Ctx) -> AppResult<()> {
+    let v = view(ctx)?;
+    let report = spindle_core::vocabulary::Vocabulary::derive(&v.closure.theory);
+    let dto = spindle_contract::vocabulary::VocabularyReportDto::from(&report);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&dto).expect("vocabulary DTO")
+    );
+    Ok(())
+}
+
+pub fn capabilities(json: bool) -> AppResult<()> {
+    let capabilities = serde_json::json!({
+        "schema_version": "elephant.capabilities.v1",
+        "version": crate::VERSION,
+        "reasoning": ["arithmetic", "temporal", "ambiguity-blocking", "aggregation", "trust-diminishment"],
+        "queries": ["status", "reason", "explain", "why-not", "require", "what-if", "abduce", "vocab"],
+        "contracts": ["spindle.reason.v1", "spindle.reason.v2", "spindle.vocabulary/1", "spindle.extensions.v1"],
+        "extensions": {"storage": "signed-theory-metadata", "selection": "last-active-document", "host_registry": true},
+        "aggregation": {"types": ["integer", "symbol"], "builtins": ["sum", "count", "min-of", "max-of"],
+            "unsupported": ["temporal", "modal", "trust-weighted", "decimal", "float"]}
+    });
+    if json {
+        println!("{capabilities}");
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&capabilities).expect("capabilities JSON")
+        );
+    }
+    Ok(())
 }
