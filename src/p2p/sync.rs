@@ -515,7 +515,10 @@ mod tests {
         record_ok(&hopt, "t1", "peerA", 0);
         {
             let m = h.lock().unwrap();
-            assert!(m[&key].last_error.is_none(), "a clean session clears the error");
+            assert!(
+                m[&key].last_error.is_none(),
+                "a clean session clears the error"
+            );
         }
     }
 

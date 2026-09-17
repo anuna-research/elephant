@@ -604,6 +604,12 @@ fn signed_meta(cbcl_text: &str) -> Result<(String, String, String), Quarantine> 
 pub fn validate_assert_payload(spl: &str) -> Result<(), Quarantine> {
     let theory =
         spindle_parser::parse_spl(spl).map_err(|e| Quarantine::BadPayload(format!("spl: {e}")))?;
+    if let Some(document) = crate::core::extensions::document(&theory)
+        .map_err(|e| Quarantine::BadPayload(e.to_string()))?
+    {
+        crate::core::extensions::registry(document)
+            .map_err(|e| Quarantine::BadPayload(e.to_string()))?;
+    }
     // ADR-012: inline claims blocks are rejected — a claims wrapper adds
     // source metadata to contained rules; detect by any rule carrying a
     // "source" meta property after a bare parse.

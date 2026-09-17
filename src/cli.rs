@@ -49,6 +49,25 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Report the available reasoning interfaces and engine limitations
+    Capabilities,
+    /// Manage shared, signed lookup functions and named aggregators
+    #[command(subcommand)]
+    Extensions(ExtensionsCmd),
+    /// Full Spindle reasoning output, including all four proof tags
+    Reason {
+        #[arg(long)]
+        trust: bool,
+        /// Preserve argument types in the spindle.reason.v2 JSON contract
+        #[arg(long)]
+        v2: bool,
+    },
+    /// Raw abduction candidates (unverified; use require for verified remedies)
+    Abduce {
+        literal: String,
+        #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..))]
+        max_solutions: u32,
+    },
     /// Agent identity (DID, keys)
     #[command(subcommand)]
     Id(IdCmd),
@@ -140,7 +159,13 @@ pub enum Command {
     /// use it to answer "what is still missing before X holds?".
     ///
     /// Example: elephant -t release require release-ready
-    Require { literal: String },
+    Require {
+        literal: String,
+        #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..))]
+        max_solutions: u32,
+        #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u32).range(1..))]
+        max_raw_candidates: u32,
+    },
     /// Hypothetical evaluation without asserting
     ///
     /// Evaluates the goal as if the given facts were asserted, without
@@ -222,7 +247,19 @@ pub enum Command {
     /// marker, and documentation with drift markers (malformed keys,
     /// detached docs, cross-signer redefinition). Derived from the corpus —
     /// never a pinned schema (SPEC-005 REQ-401).
-    Vocab,
+    Vocab {
+        /// Emit Spindle's complete predicate vocabulary contract
+        #[arg(long)]
+        spindle: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ExtensionsCmd {
+    /// Replace the shared registry with a spindle.extensions.v1 JSON document
+    Set { file: std::path::PathBuf },
+    /// Show the active shared registry document
+    Show,
 }
 
 #[derive(Subcommand)]
@@ -489,6 +526,9 @@ pub struct Ctx {
 }
 
 fn dispatch(cli: Cli) -> AppResult<()> {
+    if matches!(&cli.command, Command::Capabilities) {
+        return crate::queries::capabilities(cli.json);
+    }
     // `closure compare` is fully offline — two self-contained `status --json`
     // files, no store — so route it before resolving a home. Otherwise a
     // machine with no `ELEPHANT_HOME`/`HOME` fails in `Paths::resolve()` (exit
@@ -505,6 +545,21 @@ fn dispatch(cli: Cli) -> AppResult<()> {
     };
     // Arms are wired as IMPL-001 tasks land; anything unwired is NYI.
     match cli.command {
+        Command::Capabilities => unreachable!("handled before resolving store"),
+        Command::Reason { trust, v2 } => crate::queries::reason(&ctx, trust, v2),
+        Command::Abduce {
+            literal,
+            max_solutions,
+        } => crate::queries::abduce(&ctx, &literal, max_solutions as usize),
+        Command::Extensions(cmd) => match cmd {
+            ExtensionsCmd::Set { file } => {
+                let document = std::fs::read_to_string(&file)
+                    .map_err(|e| AppError::Config(format!("{}: {e}", file.display())))?;
+                let payload = crate::core::extensions::payload(&document)?;
+                produce_assert(&ctx, &payload, false)
+            }
+            ExtensionsCmd::Show => crate::queries::extensions(&ctx),
+        },
         Command::Id(cmd) => handle_id(&ctx, cmd),
         Command::Theory(cmd) => handle_theory(&ctx, cmd),
         Command::Assert(args) => produce_assert(&ctx, &args.spl, !args.no_advice),
@@ -525,7 +580,13 @@ fn dispatch(cli: Cli) -> AppResult<()> {
             in_reply_to,
         } => produce_concede(&ctx, &literal, &in_reply_to),
         Command::Define(args) => produce_define(&ctx, &args),
-        Command::Vocab => crate::queries::vocab(&ctx),
+        Command::Vocab { spindle } => {
+            if spindle {
+                crate::queries::spindle_vocab(&ctx)
+            } else {
+                crate::queries::vocab(&ctx)
+            }
+        }
         Command::Status { trust, fingerprint } => crate::queries::status(&ctx, trust, fingerprint),
         Command::Closure(cmd) => match cmd {
             ClosureCmd::Fingerprint { sequence } => {
@@ -537,7 +598,18 @@ fn dispatch(cli: Cli) -> AppResult<()> {
         },
         Command::Explain { literal } => crate::queries::explain(&ctx, &literal),
         Command::WhyNot { literal } => crate::queries::why_not(&ctx, &literal),
-        Command::Require { literal } => crate::queries::require(&ctx, &literal),
+        Command::Require {
+            literal,
+            max_solutions,
+            max_raw_candidates,
+        } => crate::queries::require_with_options(
+            &ctx,
+            &literal,
+            spindle_core::query::RequiresOptions {
+                max_solutions: max_solutions as usize,
+                max_raw_candidates: max_raw_candidates as usize,
+            },
+        ),
         Command::WhatIf { facts_then_goal } => crate::queries::what_if(&ctx, &facts_then_goal),
         Command::Commitments => crate::queries::commitments(&ctx),
         Command::Next => crate::queries::next(&ctx),

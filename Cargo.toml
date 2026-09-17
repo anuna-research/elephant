@@ -13,6 +13,7 @@ cbcl-core = { path = "../cbcl-rs/crates/cbcl-core", features = ["std", "serde"] 
 cbcl-parser = { path = "../cbcl-rs/crates/cbcl-parser", features = ["std", "serde"] }
 spindle-core = { path = "../spindle-rust/crates/spindle-core", features = ["serde"] }
 spindle-parser = { path = "../spindle-rust/crates/spindle-parser" }
+spindle-contract = { path = "../spindle-rust/crates/spindle-contract" }
 did-crdt = { path = "../did-crdt" } # default features = pure core (ADR-003)
 
 # CRDT corpus (ADR-002)
