@@ -6,12 +6,12 @@ mode: how-to
 # How to coordinate work from a theory
 
 This guide turns documented readiness into a promise and evidence-backed completion.
-It assumes an identity and theory from [[first-theory]].
-For peer work, complete [[how-to-share-a-theory]].
+It assumes an identity and theory from [Your first theory and promise](../tutorial/first-theory.md).
+For peer work, complete [How to share a theory](how-to-share-a-theory.md).
 
 ## Inspect the vocabulary
 
-Inspect the theory's [[Predicate Family|predicate families]] before introducing new terms:
+Inspect the theory's [predicate families](../concepts/Predicate%20Family.md) before introducing new terms:
 
 ```sh
 elephant vocab -t release --json
@@ -27,7 +27,7 @@ elephant assert '(normally r-verified (and (ci-green ?x) (review-approved ?x)) (
 ```
 
 Built-in families such as `task`, `ready`, `completed`, and `verified` are reserved at every arity.
-Use [[SPEC-005-elephant-vocabulary]] for their contract.
+Use [SPEC-005-elephant-vocabulary](../../specs/SPEC-005-elephant-vocabulary.md) for their contract.
 
 ## Supply actionable work
 
@@ -106,7 +106,7 @@ The completion rule requires both facts; the derived goal fulfils the promise.
 If completion remains unsupported, inspect `why-not` before adding evidence.
 `require` offers verified hypothetical remedies; its output does not establish that those facts occurred.
 
-The readiness convention comes from [[SPEC-006-elephant-next]].
+The readiness convention comes from [SPEC-006-elephant-next](../../specs/SPEC-006-elephant-next.md).
 A signer's automatic `agent:` source records attribution, but does not satisfy the readiness citation requirement.
 
 ## Diagnose a predicate mismatch
@@ -120,4 +120,4 @@ elephant assert '(given (ci-green m2))' -t release
 
 When the daemon cache is warm, a near-miss advisory can point from `m2` to the waiting `m1` witness.
 The advisory is best-effort, absent in direct-store mode, and never blocks an assertion.
-Its limits are defined in [[SPEC-005-elephant-vocabulary#NFR-402]].
+Its limits are defined in [NFR-402](../../specs/SPEC-005-elephant-vocabulary.md#user-content-nfr-402-advisory-overhead).

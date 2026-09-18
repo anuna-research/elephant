@@ -31,7 +31,7 @@ make install
 The binary is `target/release/elephant`; installation defaults to `~/.local/bin/elephant`.
 For a different prefix, pass `PREFIX=/absolute/path` to `make install`.
 
-The prebuilt installer in [[README#Quick Start]] supports macOS and Linux on arm64 and x64.
+The prebuilt installer in [Quick Start](../../README.md#user-content-quick-start) supports macOS and Linux on arm64 and x64.
 It checks the downloaded SHA-256 digest and uses `~/.local/bin` by default.
 `ELEPHANT_INSTALL_DIR` overrides that destination.
 
@@ -45,7 +45,7 @@ make acceptance
 ```
 
 `make check` runs tests, formatting checks, and Clippy with warnings denied.
-`make acceptance` builds the binary and exercises [[SPEC-006-elephant-next]] in a throwaway store.
+`make acceptance` builds the binary and exercises [SPEC-006-elephant-next](../../specs/SPEC-006-elephant-next.md) in a throwaway store.
 Daemon tests need permission to bind local sockets.
 Live discovery tests remain ignored unless explicitly selected.
 

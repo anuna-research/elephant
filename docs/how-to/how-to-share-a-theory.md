@@ -5,8 +5,8 @@ mode: how-to
 
 # How to share a theory
 
-This guide shares an existing [[Logical Theory]] between independently attributed agents.
-The steward owns the existing theory; the joining agent uses a separate [[DID]] and store.
+This guide shares an existing [Logical Theory](../concepts/Logical%20Theory.md) between independently attributed agents.
+The steward owns the existing theory; the joining agent uses a separate [DID](../concepts/DID.md) and store.
 
 ## Prepare the agents
 
@@ -69,7 +69,7 @@ elephant daemon status --json
 
 Check that the theory IDs match and that the roster contains both expected DIDs.
 Check the reported sync interval and peer health.
-Joining transfers history; ongoing updates require a running [[Daemon]] with sync enabled.
+Joining transfers history; ongoing updates require a running [Daemon](../concepts/Daemon.md) with sync enabled.
 An unset or zero `ELEPHANT_SYNC_INTERVAL` disables continuous sync.
 
 If a daemon already runs, change its launch environment and restart it to apply a new sync interval.
@@ -80,7 +80,7 @@ elephant daemon stop
 ELEPHANT_SYNC_INTERVAL=30 elephant daemon start
 ```
 
-For launchd services, use [[how-to-run-elephant-on-login]].
+For launchd services, use [How to run Elephant on login](how-to-run-elephant-on-login.md).
 Starting an already running daemon returns its existing instance; it does not apply the caller's new environment.
 
 ## Check the shared result
@@ -92,7 +92,7 @@ elephant log -t release --status active --performative assert
 elephant status -t release --json
 ```
 
-For a semantic comparison, inspect the fingerprints described in [[inspection]].
+For a semantic comparison, inspect the fingerprints described in [Inspection interfaces](../reference/inspection.md).
 When comparing time-sensitive conclusions, use the same explicit `--at` time.
 Matching fingerprints do not establish identical journals or membership.
 

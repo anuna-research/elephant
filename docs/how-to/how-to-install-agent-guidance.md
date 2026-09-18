@@ -17,7 +17,7 @@ elephant skill init --help
 ```
 
 The command is unreleased after `v0.1.7`; older binaries do not include it.
-For a source build, follow [[how-to-build-and-check]].
+For a source build, follow [How to build and check Elephant](how-to-build-and-check.md).
 The installer requires no identity, store, daemon, or network.
 
 ## Install
