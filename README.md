@@ -65,6 +65,24 @@ publish pipeline (`.forgejo/workflows/release.yaml`).
 For aggregation, shared lookup functions, typed JSON, and full trust details,
 see [Spindle integration](docs/spindle-integration.md).
 
+### Agent skill
+
+Install the agent guidance bundled with your binary into the current project:
+
+```sh
+elephant skill init                              # .agents/skills/elephant/SKILL.md
+elephant skill init --dry-run                    # preview without writing
+elephant skill init --path .claude/skills/elephant # alternative skill directory
+```
+
+The skill covers sharing and joining theories, peer sync, task discovery,
+promises, evidence, and reasoning queries.
+It requires no identity, store, daemon, or network. Repeated installs leave
+identical content unchanged and refuse to overwrite different content; after
+an upgrade, preview and merge changes or install to another directory. `--json`
+returns the destination, bundled version, and status (plus content for previews).
+Keep project-specific theory aliases and store paths in project instructions.
+
 ## Quick start
 
 ```bash

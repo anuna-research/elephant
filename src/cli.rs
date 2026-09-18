@@ -49,6 +49,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Install bundled agent guidance (no identity or theory required)
+    #[command(subcommand)]
+    Skill(SkillCmd),
     /// Report the available reasoning interfaces and engine limitations
     Capabilities,
     /// Manage shared, signed lookup functions and named aggregators
@@ -525,7 +528,28 @@ pub struct Ctx {
     pub verbose: u8,
 }
 
+#[derive(Subcommand)]
+pub enum SkillCmd {
+    /// Write the bundled Elephant skill, preserving existing edits
+    Init {
+        /// Skill directory; SKILL.md is written inside it
+        #[arg(long, default_value = ".agents/skills/elephant")]
+        path: std::path::PathBuf,
+        /// Print the bundled skill without writing files
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 fn dispatch(cli: Cli) -> AppResult<()> {
+    if let Command::Skill(SkillCmd::Init { path, dry_run }) = &cli.command {
+        if cli.at.is_some() || cli.theory.is_some() {
+            return Err(AppError::Usage(
+                "skill init does not use --at or --theory".into(),
+            ));
+        }
+        return crate::skill::init(path, *dry_run, cli.json);
+    }
     if matches!(&cli.command, Command::Capabilities) {
         return crate::queries::capabilities(cli.json);
     }
@@ -546,6 +570,7 @@ fn dispatch(cli: Cli) -> AppResult<()> {
     // Arms are wired as IMPL-001 tasks land; anything unwired is NYI.
     match cli.command {
         Command::Capabilities => unreachable!("handled before resolving store"),
+        Command::Skill(_) => unreachable!("handled before resolving store"),
         Command::Reason { trust, v2 } => crate::queries::reason(&ctx, trust, v2),
         Command::Abduce {
             literal,

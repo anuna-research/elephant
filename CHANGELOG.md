@@ -7,6 +7,8 @@ from Git tags and commits; changes after the latest tag appear under Unreleased.
 
 ### Added
 
+- `elephant skill init` installs bundled, versioned agent coordination guidance,
+  with a configurable directory, preview and JSON output, and existing-edit protection.
 - Spindle v0.4 reasoning integration: arithmetic, integer/symbol aggregation,
   temporal reasoning, and trust diminishment.
 - `capabilities` and `reason` commands, including typed `spindle.reason.v2`
