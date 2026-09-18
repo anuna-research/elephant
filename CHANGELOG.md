@@ -31,6 +31,9 @@ from Git tags and commits; changes after the latest tag appear under Unreleased.
 
 ### Documentation
 
+- Reorganized the README as an entry point with focused tutorials, how-to guides,
+  inspection reference, and architecture explanations. Corrected promise ordering,
+  invite-code handling, daemon lifecycle examples, and unreleased command guidance.
 - Added the bundled [Elephant agent skill](skills/elephant/SKILL.md): sharing
   theories through steward invitations, separate agent identities and stores,
   joining and continuous sync, and membership and convergence checks. Covers
