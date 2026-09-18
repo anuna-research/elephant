@@ -6,7 +6,7 @@ mode: reference
 # Inspection interfaces
 
 These CLI interfaces expose conclusions, semantic fingerprints, and signed journal accounting.
-The JSON contract is [[SPEC-001-elephant-core#CON-004]].
+The JSON contract is [CON-004](../../specs/SPEC-001-elephant-core.md#user-content-con-004-cli-json-contract).
 
 ## Conclusions
 
@@ -29,7 +29,7 @@ Example output fields:
 ```
 
 In source builds after `v0.1.7`, `reason --v2 --json` preserves argument types and all proof tags.
-[[spindle-integration]] documents the reasoning contracts and supported fragments.
+[Spindle reasoning in Elephant](../spindle-integration.md) documents the reasoning contracts and supported fragments.
 
 ## Closure fingerprints
 
@@ -54,7 +54,7 @@ Read or parse failures use the CLI's error exit codes.
 `theory list` includes total journal entries.
 `theory inspect THEORY` separates active, retracted, and setup/content assertions from retraction entries.
 A total journal count is not an active-statement count.
-The journal entry contract is [[SPEC-001-elephant-core#CON-002]].
+The journal entry contract is [CON-002](../../specs/SPEC-001-elephant-core.md#user-content-con-002-entry-the-corpus-element).
 
 `log` combines its filters with AND:
 

@@ -6,7 +6,7 @@ mode: how-to
 # How to run Elephant on login
 
 This guide configures a macOS LaunchAgent for an existing Elephant identity.
-Complete [[how-to-share-a-theory]] before relying on peer updates.
+Complete [How to share a theory](how-to-share-a-theory.md) before relying on peer updates.
 
 ## Configure the service
 
