@@ -8,7 +8,9 @@ from Git tags and commits; changes after the latest tag appear under Unreleased.
 ### Added
 
 - `elephant skill init` installs bundled, versioned agent coordination guidance,
-  with a configurable directory, preview and JSON output, and existing-edit protection.
+  defaulting to `.agents/skills/elephant/SKILL.md`. Supports `--path`, `--dry-run`,
+  and `--json` without requiring an identity, store, daemon, or network. Repeated
+  installs leave identical content unchanged and refuse to overwrite local edits.
 - Spindle v0.4 reasoning integration: arithmetic, integer/symbol aggregation,
   temporal reasoning, and trust diminishment.
 - `capabilities` and `reason` commands, including typed `spindle.reason.v2`
@@ -29,6 +31,10 @@ from Git tags and commits; changes after the latest tag appear under Unreleased.
 
 ### Documentation
 
+- Added the bundled [Elephant agent skill](skills/elephant/SKILL.md): sharing
+  theories through steward invitations, separate agent identities and stores,
+  joining and continuous sync, and membership and convergence checks. Covers
+  readiness discovery, promises, acceptance evidence, and derived completion.
 - Added the [Spindle integration guide](docs/spindle-integration.md), including
   supported fragments, extension semantics, and bounded-search limitations.
 - Added design specifications for theory references and published reports;
