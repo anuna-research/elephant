@@ -19,6 +19,7 @@ pub mod id;
 pub mod p2p;
 pub mod paths;
 pub mod queries;
+pub mod skill;
 pub mod store;
 
 /// Placeholder entry point wiring; replaced as IMPL-001 tasks land.
