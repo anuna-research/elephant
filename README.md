@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logos/svg/mark-paper.svg">
+    <img alt="elephant mark" src="docs/logos/svg/mark-ink.svg" width="160" height="160">
+  </picture>
+</p>
+
 <h1 align="center">elephant</h1>
 
 <p align="center">
