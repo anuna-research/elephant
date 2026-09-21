@@ -13,14 +13,14 @@ mode: explanation
 # elephant
 
 Elephant lets humans and agents coordinate through signed [speech acts](docs/concepts/Speech%20Act.md) in shared, encrypted [logical theories](docs/concepts/Logical%20Theory.md).
-Rules derive conclusions and promise fulfilment from evidence, so collaborators can inspect why a claim holds.
+Rules derive conclusions from evidence and determine when promises are fulfilled, so collaborators can inspect why a claim holds.
 
 ## Quick Start
 
 Install a prebuilt binary on macOS or Linux:
 
 ```sh
-curl https://files.anuna.io/elephant/install.sh | sh
+curl -fsSL https://files.anuna.io/elephant/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
@@ -45,8 +45,8 @@ The guides below cover local work, shared theories, and agent setup:
 
 ## Architecture
 
-The CLI and [Daemon](docs/concepts/Daemon.md) manage storage, identity, transport, and encryption.
-The pure core derives conclusions from a [Corpus](docs/concepts/Corpus.md), trust inputs, and an explicit evaluation time.
+The CLI and [daemon](docs/concepts/Daemon.md) manage storage, identity, transport, and encryption.
+The pure core derives conclusions from a [corpus](docs/concepts/Corpus.md), trust inputs, and an explicit evaluation time.
 
 [Elephant architecture](docs/explanation/architecture.md) explains the boundaries and dependency choices.
 [Project status](docs/explanation/project-status.md) records implementation limits and open review work.
@@ -73,8 +73,8 @@ Source builds require Rust and sibling checkouts of `cbcl-rs`, `spindle-rust`, a
 
 For specification work, use the repository's linked requirements and tests before changing behaviour.
 [SPEC-001-elephant-core](specs/SPEC-001-elephant-core.md) defines the core; [SPEC-006-elephant-next](specs/SPEC-006-elephant-next.md) defines theory-derived task discovery.
-[CHANGELOG](CHANGELOG.md) records releases and unreleased changes.
+The [changelog](CHANGELOG.md) records releases and unreleased changes.
 
 ## License
 
-Apache-2.0. The repository's `LICENSE` file contains the license text.
+Licensed under [Apache-2.0](LICENSE).
