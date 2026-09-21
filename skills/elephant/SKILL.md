@@ -11,6 +11,9 @@ Elephant exchanges signed speech acts into shared, encrypted theories. Rules
 derive conclusions and commitment fulfilment from evidence. This skill is
 bundled with Elephant {{ELEPHANT_VERSION}}; use `elephant capabilities --json`
 and command-specific `--help` to inspect the installed interface.
+The repository copy is a template; `elephant skill init` substitutes the
+binary's version when installing it. Use `elephant --version` to check the
+binary you are actually running.
 
 ## Orient
 
@@ -116,6 +119,37 @@ Wrap parameterised assertion facts in `(given ...)`. Query and promise operands
 are literals without that wrapper. Elephant supplies signed attribution; do not
 hand-author `claims` wrappers.
 
+### SPL quick reference
+
+Assertion payloads use Spindle Lisp (SPL). These forms cover routine theory
+authoring; rule labels identify rules for priorities, metadata, and inspection.
+
+| Form | Meaning |
+| --- | --- |
+| `(given (ci-green api))` | Assert a fact. |
+| `(always r-reviewed (approved ?task) (reviewed ?task))` | Strict rule: the body entails the head. |
+| `(normally r-ready (reviewed ?task) (ready ?task))` | Defeasible rule: the body normally supports the head. |
+| `(except r-blocked (blocked ?task) (not (ready ?task)))` | Defeater: blocks readiness without deriving its negation. |
+| `(prefer r-blocked r-ready)` | Give the first rule priority over the second. |
+| `(and (ci-green ?task) (reviewed ?task))` | Require both conditions in a rule body. |
+| `(not (ready api))` | Explicit negation, distinct from failure to prove readiness. |
+| `(meta r-ready (source "acceptance-document#readiness"))` | Attach metadata to a rule label. |
+
+Variables start with `?`; use them in rules to range over matching facts.
+Queries and promises take ground literals such as `(ready api)`, with concrete
+arguments and no `given` wrapper. Use quoted strings for descriptive text and
+`;` for comments through the end of a line.
+
+Consult the [full SPL reference](https://spindle-rust.anuna.io/reference/spl)
+for additional syntax and the [Spindle documentation](https://spindle-rust.anuna.io/)
+for reasoning semantics and advanced features. Those documents may describe a
+newer engine than the installed Elephant binary. Check `elephant capabilities
+--json` before using arithmetic, aggregation, temporal or modal rules, trust,
+or extensions, especially in combination. Elephant supplies signed attribution
+and exposes shared extensions through its own commands.
+
+### Coordination examples
+
 ```sh
 elephant assert '(given (ci-green api))' -t release
 elephant assert '(normally r-complete-api (and (ci-green api) (review-approved api)) (completed api))' -t release
@@ -143,6 +177,140 @@ and does not itself supply evidence. Keep conjunctions flat: `(and A B C)`.
 
 Correct a mistaken assertion by retracting its receipt's sentence ID and
 asserting the correction. Retraction is restricted to the original signer.
+
+### Predicates and vocabulary
+
+In `(ci-green api)`, `ci-green` is the predicate and `api` is its argument.
+The indicator `ci-green/1` names that predicate with arity one; `ci-green/2`
+is a different signature. Use stable predicate names and put task identifiers
+in arguments. Inspect existing vocabulary before coining a new predicate:
+
+```sh
+elephant vocab -t release --json
+elephant vocab -t release --spindle --json
+elephant define ci-green/1 --arg task:symbol --desc "CI passed for this task" --kind evidence -t release
+```
+
+`vocab` exposes Elephant's vocabulary and documentation; `--spindle` selects
+the engine's vocabulary view. `define` publishes signed predicate documentation:
+with `--arg` it emits a declaration; without it, predicate metadata. Supply one
+`--arg name:type` per argument when declaring a signature. Accepted types are
+`symbol`, `integer`, `decimal`, `float`, `number`, and `any`; for example,
+`--arg amount:integer`. Documentation does
+not assert `(ci-green api)` or make it true. Built-in families such as `task`,
+`ready`, and `completed` are reserved; reuse them without redefining them.
+
+### Rule and predicate metadata
+
+Use rule labels for rule documentation and `(predicate NAME ARITY)` for
+predicate-family metadata:
+
+```lisp
+(meta r-complete-api
+  (description "Complete the API after CI and review pass")
+  (source "acceptance-document#api"))
+(meta (predicate ci-green 1)
+  (description "CI passed for this task")
+  (kind evidence))
+```
+
+Prefer `define` for predicate documentation because it validates the vocabulary
+grammar before signing. Inspect rule metadata with `describe r-complete-api
+--json` and predicate documentation with `vocab --json`. A source citation
+documents the governing rule; it does not prove the cited requirements were met.
+
+### Aggregation
+
+Bind the group in an ordinary premise before aggregating its matching rows:
+
+```lisp
+(given (person alice))
+(given (payment alice first 10))
+(given (payment alice second 10))
+(normally r-total-payment
+  (and (person ?person)
+       (agg ?total sum ?cost (payment ?person ?id ?cost)))
+  (total-payment ?person ?total))
+```
+
+This supports `(total-payment alice 20)`. Aggregates read completed predicate
+snapshots; distinct rows contribute separately, while multiple proofs of the
+same row do not multiply its contribution. Here `?person` selects the group,
+`?id` and `?cost` are row-local, and `?total` binds the result. Built-in reducers
+include `sum`, `count`, `min-of`, and `max-of`.
+
+The current aggregate fragment excludes temporal/modal programs, decimal/float
+inputs, and trust-weighted snapshots. Do not combine it with `--trust`.
+Check installed capabilities before combining fragments or using extensions.
+
+### Temporal reasoning
+
+Use `during` to bound a literal's validity, with integer epoch milliseconds or
+RFC3339 `moment` expressions:
+
+```lisp
+(given (during (review-approved api)
+  (moment "2026-09-01T00:00:00Z")
+  (moment "2026-09-30T23:59:59.999Z")))
+```
+
+Both endpoints are inclusive (`start <= time <= end`), at millisecond
+resolution. This example covers September in UTC; ending at October 1 midnight
+would include that instant too. Include `Z` or an explicit UTC offset in RFC3339
+timestamps rather than relying on a local timezone. Without `--at`, Elephant
+evaluates at the current time.
+
+Query at an explicit reference time to make the evaluation reproducible:
+
+```sh
+elephant explain '(review-approved api)' -t release --at 2026-09-15T00:00:00Z --json
+```
+
+Use the same `--at` time for related reasoning and diagnostic queries. It changes
+the evaluation time, not which journal entries exist: it cannot reconstruct a
+past journal or restore retracted assertions.
+
+### Trust-weighted reasoning
+
+Trust policy is local to the evaluating identity. Locate its store with
+`elephant info --json` and the full theory ID with `elephant theory list --json`.
+The policy file is `<store>/trust/<full-theory-id>.spl`; create the `trust`
+directory if absent and preserve unrelated policy when editing it. Repeated
+`trusts` entries for the same source or `threshold` entries for the same name
+use the last value parsed; replace the intended entry rather than accumulating
+duplicates. The current implementation parses local policy before theory
+entries, so matching directives in the theory can override it. Inspect those
+entries when a result differs from the local policy you expected.
+For a signer DID `did:crdt:<full-id>`, the source atom is
+`agent:<full-id>`, using the complete suffix, not an alias or shortened ID.
+
+For example, add these forms to that local policy file, replacing `FULL_SIGNER_ID`
+with the signer's complete DID suffix from the assertion receipt or journal:
+
+```lisp
+(trusts agent:FULL_SIGNER_ID 0.8)
+(threshold action 0.5)
+```
+
+Inspect weighted conclusions and their provenance:
+
+```sh
+elephant status -t release --trust --json
+elephant reason -t release --v2 --trust --json
+```
+
+`trusts` assigns the source a weight; `threshold` names a cutoff reported in
+`above_threshold`: a degree equal to the cutoff passes (`degree >= threshold`).
+Weights and thresholds must be between 0 and 1 inclusive.
+Inspect `degree`, `sources`, and `trust_details` for the
+result and any diminishment from defeaters. A source weight of `0.8` does not
+guarantee a conclusion degree of `0.8`: positive derivations use their weakest
+trust link, with configured source decay and defeater diminishment also affecting
+the result. Threshold results do not authorize
+actions or replace proof tags. Elephant derives attribution from signed entries;
+do not add `claims` wrappers to impersonate a trusted source. Peers can use
+different local policies and obtain different trust results from the same theory.
+Aggregation currently cannot be evaluated with `--trust`.
 
 ## Diagnose and explore
 
